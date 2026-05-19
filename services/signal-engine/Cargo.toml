@@ -1,0 +1,20 @@
+[package]
+name = "hyperion-signal-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+chrono.workspace = true
+hyperion-config = { path = "../../shared/config" }
+hyperion-models = { path = "../../shared/models" }
+hyperion-schemas = { path = "../../shared/schemas" }
+hyperion-utils = { path = "../../shared/utils" }
+serde_json.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+uuid.workspace = true

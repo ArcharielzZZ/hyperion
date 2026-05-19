@@ -1,0 +1,1 @@
+{"channel":"trades","data":[{"coin":"BTC","side":"B","px":"109250.5","sz":"0.015","hash":"0xtrade001","time":1778536578631,"tid":101,"users":["0xbuyer","0xseller"]},{"coin":"BTC","side":"A","px":"109251.0","sz":"0.025","hash":"0xtrade002","time":1778536578632,"tid":102,"users":["0xbuyer2","0xseller2"]}]}

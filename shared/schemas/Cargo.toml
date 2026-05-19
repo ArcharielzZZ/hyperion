@@ -1,0 +1,12 @@
+[package]
+name = "hyperion-schemas"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+hyperion-models = { path = "../models" }
+serde.workspace = true
+sqlx.workspace = true
+uuid.workspace = true

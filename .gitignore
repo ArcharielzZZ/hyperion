@@ -1,0 +1,80 @@
+# =============================================================================
+# Hyperion — code in git; heavy/runtime data out of git (see docs/DATA_ARTIFACTS.md)
+# =============================================================================
+
+# --- Secrets / local env ---
+.env
+.env.*
+!.env.example
+
+# --- Rust build artifacts ---
+/target/
+/target-*/
+
+# --- Python (pipeline) ---
+python/.venv/
+python/**/__pycache__/
+python/**/*.py[cod]
+python/.pytest_cache/
+python/.mypy_cache/
+python/.ruff_cache/
+python/data/
+python/analytics/
+python/**/*.egg-info/
+python/dist/
+python/build/
+
+# --- Optional cloud data bundle mount (contents only; README stays tracked) ---
+shared-data/*
+!shared-data/README.md
+!shared-data/.gitkeep
+
+# --- Parquet lake + checkpoints (any cwd) ---
+data/
+**/*.parquet
+
+# --- PostgreSQL dumps (schema migrations under infra/migrations/ stay tracked) ---
+*.dump
+*.sql.gz
+pg_dump/
+
+# --- Live scoop + service logs ---
+analytics/research/live_scoop_logs/*
+!analytics/research/live_scoop_logs/.gitkeep
+*.log
+
+# --- Generated research / audit / backtest outputs ---
+analytics/research/scoring_audit_*.md
+analytics/research/copy_trade_audit_*.md
+analytics/research/replay_*.md
+analytics/research/hyperliquid_whale_*
+analytics/research/deep_backfill_*
+analytics/research/*.csv
+analytics/research/*_fills.json
+analytics/research/hyperliquid_leaderboard_cache.json
+analytics/research/copy_backtest/*
+!analytics/research/copy_backtest/.gitkeep
+
+analytics/backtests/**/*
+!analytics/backtests/README.md
+!analytics/backtests/.gitkeep
+
+analytics/notebooks/**/*
+!analytics/notebooks/README.md
+!analytics/notebooks/.gitkeep
+
+# --- Frontend (dashboard scaffold) ---
+node_modules/
+dist/
+.next/
+.turbo/
+
+# --- SQLx offline cache (regenerate locally) ---
+.sqlx/
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json

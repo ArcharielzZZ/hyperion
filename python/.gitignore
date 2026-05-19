@@ -1,0 +1,8 @@
+# Prefer hyperion/.gitignore at repo root; kept for tools that only open python/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+data/

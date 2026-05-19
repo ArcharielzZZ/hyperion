@@ -1,0 +1,15 @@
+# Example ranking formula (weights must sum to 1.0).
+version: "2026.05.13"
+decay_half_life_days: 30
+normalization: "minmax" # minmax | zscore | none
+
+weights:
+  sharpe: 0.35
+  pnl_consistency: 0.20
+  win_rate: 0.15
+  low_drawdown: 0.10
+  recent_performance: 0.20
+
+# Optional: cap factor influence after normalization
+factor_caps:
+  sharpe: 0.95
