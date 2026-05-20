@@ -215,6 +215,11 @@ def copy_paper_backtest_cmd(
         help="Fraction of whale fill size to mirror",
     ),
     starting_equity: float = typer.Option(10_000.0, "--starting-equity"),
+    use_dynamic_sizing: bool = typer.Option(
+        True,
+        "--dynamic-sizing/--fixed-scale",
+        help="Size trips via Kelly/stop engine vs legacy copy_scale legs",
+    ),
     fee_bps: float = typer.Option(4.0, "--fee-bps"),
     slippage_bps: float = typer.Option(6.0, "--slippage-bps"),
     full_history: bool = typer.Option(
@@ -245,9 +250,10 @@ def copy_paper_backtest_cmd(
     import time
 
     from hyperion_pipeline.analytics.copy_paper_backtest import (
+        format_benchmark_comparison,
         format_db_deep_appendix,
         load_fills_cache,
-        run_copy_paper_backtest,
+        run_copy_paper_benchmarks,
         save_fills_cache,
         write_backtest_report,
     )
@@ -300,6 +306,7 @@ def copy_paper_backtest_cmd(
     results = []
     metas: list[dict] = []
     fills_batch: list[list] = []
+    benchmarks_batch: list = []
 
     for i, wallet in enumerate(wallets):
         if i > 0 and not from_db:
@@ -316,7 +323,7 @@ def copy_paper_backtest_cmd(
             metas.append({})
             fills_batch.append(fills)
             typer.echo(f"  fills={len(fills):,}")
-        r = run_copy_paper_backtest(
+        bench = run_copy_paper_benchmarks(
             wallet,
             fills,
             starting_equity=starting_equity,
@@ -324,11 +331,27 @@ def copy_paper_backtest_cmd(
             fee_bps=fee_bps,
             slippage_bps=slippage_bps,
             coin_allowlist=allow,
+            use_dynamic_sizing=use_dynamic_sizing,
         )
+        r = bench.fill_follow
         results.append(r)
+        benchmarks_batch.append(bench)
         typer.echo(
-            f"  return={r.total_return_mtm_pct:.2f}% (mtm) equity=${r.ending_equity_mtm:,.2f} "
-            f"fills={r.fill_count} max_dd={r.max_drawdown_pct:.2f}%"
+            f"  round-trip copy: return={r.total_return_pct:.2f}% equity=${r.ending_equity:,.2f} "
+            f"copyability={r.copyability_score:.3f} trips={r.round_trips_simulated}/{r.total_round_trips_detected}"
+        )
+        leg = bench.fill_follow_legacy
+        typer.echo(
+            f"  fill-follow legacy: return={leg.total_return_mtm_pct:.2f}% "
+            f"mirrored={bench.mirror_coverage_pct:.1f}% of fills"
+        )
+        typer.echo(
+            f"  fifo+slippage (scaled): return={bench.fifo_slippage_return_pct:.2f}% "
+            f"trips={bench.fifo_closed_trips} fill_dir={bench.fills_with_dir_pct:.0f}%"
+        )
+        typer.echo(
+            f"  exchange closedPnl (scaled): return={bench.exchange_closed_return_pct:.2f}% "
+            f"equity=${bench.exchange_closed_ending_equity:,.2f}"
         )
 
     source_note = (
@@ -348,7 +371,8 @@ def copy_paper_backtest_cmd(
     )
     if from_db and deep_appendix:
         base = out.read_text(encoding="utf-8")
-        for r, m, f, w in zip(results, metas, fills_batch, wallets, strict=True):
+        for r, m, f, w, bench in zip(results, metas, fills_batch, wallets, benchmarks_batch, strict=True):
+            base += format_benchmark_comparison(bench, copy_scale=copy_scale)
             base += format_db_deep_appendix(
                 wallet=w,
                 fills=f,

@@ -1,4 +1,12 @@
-"""Offline fill-follow paper trading simulation for whale wallet research."""
+"""
+Offline paper copy-trading backtests for Hyperliquid whale wallets.
+
+Trust hierarchy for wallet evaluation (most → least reliable):
+  1. ``exchange_closed_pnl_scaled`` — HL ``closedPnl`` on close rows × copy_scale.
+  2. ``fifo_scaled`` — FIFO Open/Close on full tape, scale net PnL.
+  3. ``round_trip_copy`` — complete trips only (dust/risk filters on every leg).
+  4. ``fill_follow_legacy`` — per-fill mirror; bot-realism stress test only.
+"""
 
 from __future__ import annotations
 
@@ -58,6 +66,173 @@ class CopyPaperResult:
     first_fill: datetime | None
     last_fill: datetime | None
     trades: list[PaperTradeRecord] = field(default_factory=list)
+    total_round_trips_detected: int = 0
+    round_trips_simulated: int = 0
+    round_trips_skipped: dict[str, int] = field(default_factory=dict)
+    skip_counts_by_reason: dict[str, int] = field(default_factory=dict)
+    copyability_score: float = 0.0
+    avg_pnl_per_trade: float = 0.0
+    realized_pnl: float = 0.0
+    sizing_summary: object | None = None
+    use_dynamic_sizing: bool = False
+    verdict: str = ""
+    fill_dir_quality: dict[str, Any] | None = None
+    exchange_return_pct: float = 0.0
+
+
+@dataclass(slots=True)
+class CopyPaperBenchmarks:
+    """
+    Side-by-side PnL views for the same wallet tape.
+
+    ``round_trip`` — primary paper simulator (complete trips only).
+    ``fifo_slippage`` / ``exchange_closed`` — trust hierarchy validation (see module docstring).
+    ``fill_follow_legacy`` — naive per-fill mirror for bot-realism only.
+    """
+
+    round_trip: CopyPaperResult
+    fill_follow_legacy: CopyPaperResult
+    fifo_slippage_return_pct: float
+    fifo_slippage_ending_equity: float
+    fifo_closed_trips: int
+    exchange_closed_return_pct: float
+    exchange_closed_ending_equity: float
+    fills_with_dir_pct: float
+    mirror_coverage_pct: float
+
+    @property
+    def fill_follow(self) -> CopyPaperResult:
+        """Alias: primary copy sim (round-trip). Kept for callers expecting ``fill_follow``."""
+
+        return self.round_trip
+
+
+def exchange_closed_pnl_scaled(fills: list[TradeFill], copy_scale: float) -> float:
+    """Sum HL ``closedPnl`` on Close-* rows, scaled — linear copy-size assumption."""
+
+    total = 0.0
+    for f in fills:
+        if not f.fill_dir or not f.fill_dir.lower().startswith("close"):
+            continue
+        if f.closed_pnl_usd is not None:
+            total += float(f.closed_pnl_usd) * copy_scale
+    return total
+
+
+def run_fifo_scaled_copy_paper(
+    fills: list[TradeFill],
+    *,
+    starting_equity: float,
+    copy_scale: float,
+    slippage_bps: float,
+) -> tuple[float, int]:
+    """
+    FIFO round trips on full whale tape, then scale net PnL per trip by ``copy_scale``.
+
+    Fees in each trip are whale-sized; scaling net PnL approximates paper economics better
+    than mirroring arbitrary subsets of fills.
+    """
+
+    from hyperion_pipeline.analytics.paper_replay.replay_core import slip_leg_pnl
+    from hyperion_pipeline.analytics.paper_replay.round_trips import fifo_closed_round_trips
+    from hyperion_pipeline.analytics.paper_replay.slippage import LinearBpsSlippage
+
+    trips = fifo_closed_round_trips(fills, realized_only=True)
+    slip = LinearBpsSlippage(slippage_bps)
+    net = sum(slip_leg_pnl(t, slip).net_pnl_usd * copy_scale for t in trips)
+    ending = starting_equity + net
+    ret_pct = ((ending - starting_equity) / starting_equity) * 100.0 if starting_equity else 0.0
+    return ret_pct, len(trips)
+
+
+def _metrics_to_copy_result(metrics) -> CopyPaperResult:
+    from hyperion_pipeline.analytics.copy_paper_simulator import RoundTripCopyMetrics
+    return CopyPaperResult(
+        wallet=metrics.wallet,
+        fill_count=metrics.fill_count,
+        trade_count=metrics.round_trips_simulated,
+        starting_equity=metrics.starting_equity,
+        ending_equity=metrics.ending_equity,
+        ending_equity_mtm=metrics.ending_equity_mtm,
+        total_return_pct=metrics.total_return_pct,
+        total_return_mtm_pct=metrics.total_return_mtm_pct,
+        open_notional_usd=metrics.open_notional_usd,
+        win_rate_pct=metrics.win_rate_pct,
+        total_fees=metrics.total_fees_paid,
+        total_slippage=metrics.total_slippage_cost,
+        max_drawdown_pct=metrics.max_drawdown_pct,
+        coins_traded=metrics.coins_traded,
+        first_fill=metrics.first_fill,
+        last_fill=metrics.last_fill,
+        total_round_trips_detected=metrics.total_round_trips_detected,
+        round_trips_simulated=metrics.round_trips_simulated,
+        round_trips_skipped=metrics.round_trips_skipped,
+        skip_counts_by_reason=metrics.skip_counts_by_reason,
+        copyability_score=metrics.copyability_score,
+        avg_pnl_per_trade=metrics.avg_pnl_per_trade,
+        realized_pnl=metrics.realized_pnl,
+        sizing_summary=metrics.sizing_summary,
+        use_dynamic_sizing=metrics.use_dynamic_sizing,
+        verdict=metrics.verdict,
+        fill_dir_quality=metrics.fill_dir_quality,
+        exchange_return_pct=getattr(metrics, "exchange_return_pct", 0.0),
+    )
+
+
+def run_copy_paper_benchmarks(
+    wallet: str,
+    fills: list[TradeFill],
+    *,
+    starting_equity: float = 10_000.0,
+    copy_scale: float = 0.0001,
+    fee_bps: float = 4.0,
+    slippage_bps: float = 6.0,
+    coin_allowlist: set[str] | None = None,
+    use_dynamic_sizing: bool | None = None,
+) -> CopyPaperBenchmarks:
+    """Run round-trip copy sim plus FIFO / exchange benchmarks on one tape."""
+
+    rt = run_copy_paper_backtest(
+        wallet,
+        fills,
+        starting_equity=starting_equity,
+        copy_scale=copy_scale,
+        fee_bps=fee_bps,
+        slippage_bps=slippage_bps,
+        coin_allowlist=coin_allowlist,
+        use_dynamic_sizing=use_dynamic_sizing,
+    )
+    legacy = run_fill_follow_legacy(
+        wallet,
+        fills,
+        starting_equity=starting_equity,
+        copy_scale=copy_scale,
+        fee_bps=fee_bps,
+        slippage_bps=slippage_bps,
+        coin_allowlist=coin_allowlist,
+    )
+    fifo_ret, fifo_n = run_fifo_scaled_copy_paper(
+        fills,
+        starting_equity=starting_equity,
+        copy_scale=copy_scale,
+        slippage_bps=slippage_bps,
+    )
+    ex_net = exchange_closed_pnl_scaled(fills, copy_scale)
+    ex_end = starting_equity + ex_net
+    ex_ret = ((ex_end - starting_equity) / starting_equity) * 100.0 if starting_equity else 0.0
+    n = len(fills) or 1
+    with_dir = sum(1 for f in fills if f.fill_dir)
+    return CopyPaperBenchmarks(
+        round_trip=rt,
+        fill_follow_legacy=legacy,
+        fifo_slippage_return_pct=fifo_ret,
+        fifo_slippage_ending_equity=starting_equity * (1.0 + fifo_ret / 100.0),
+        fifo_closed_trips=fifo_n,
+        exchange_closed_return_pct=ex_ret,
+        exchange_closed_ending_equity=ex_end,
+        fills_with_dir_pct=100.0 * with_dir / n,
+        mirror_coverage_pct=100.0 * legacy.trade_count / n if fills else 0.0,
+    )
 
 
 def _slip_price(side: str, price: float, slippage_bps: float, is_entry: bool) -> float:
@@ -84,11 +259,53 @@ def run_copy_paper_backtest(
     fee_bps: float = 4.0,
     slippage_bps: float = 6.0,
     coin_allowlist: set[str] | None = None,
+    use_dynamic_sizing: bool | None = None,
 ) -> CopyPaperResult:
     """
-    Mirror whale fills at ``copy_scale`` fraction of size, capped per fill at
-    ``max_equity_pct_per_fill`` of current equity notional (and optionally
-    ``max_trade_usd``). Skips legs below ``min_trade_usd``.
+    Round-trip copy simulation: only complete whale trips where every leg passes filters.
+
+    See ``run_fill_follow_legacy`` for naive per-fill mirroring (not for wallet ranking).
+    """
+    from hyperion_pipeline.analytics.copy_paper_simulator import run_round_trip_copy_simulation
+
+    ex_net = exchange_closed_pnl_scaled(fills, copy_scale)
+    ex_ret = ((ex_net / starting_equity) * 100.0) if starting_equity else 0.0
+    metrics = run_round_trip_copy_simulation(
+        wallet,
+        fills,
+        starting_equity=starting_equity,
+        copy_scale=copy_scale,
+        max_equity_pct_per_fill=max_equity_pct_per_fill,
+        min_trade_usd=min_trade_usd,
+        max_trade_usd=max_trade_usd,
+        fee_bps=fee_bps,
+        slippage_bps=slippage_bps,
+        coin_allowlist=coin_allowlist,
+        use_dynamic_sizing=use_dynamic_sizing,
+        exchange_return_pct=ex_ret,
+    )
+    result = _metrics_to_copy_result(metrics)
+    result.exchange_return_pct = ex_ret
+    return result
+
+
+def run_fill_follow_legacy(
+    wallet: str,
+    fills: list[TradeFill],
+    *,
+    starting_equity: float = 10_000.0,
+    copy_scale: float = 0.0001,
+    max_equity_pct_per_fill: float = 0.02,
+    min_trade_usd: float = 1.0,
+    max_trade_usd: float | None = None,
+    fee_bps: float = 4.0,
+    slippage_bps: float = 6.0,
+    coin_allowlist: set[str] | None = None,
+) -> CopyPaperResult:
+    """
+    Legacy per-fill mirror — can desync when most fills are skipped (dust / risk cap).
+
+    Do not use for wallet quality decisions; see trust hierarchy in module docstring.
     """
     ordered = sorted(fills, key=lambda f: f.event_timestamp)
     if coin_allowlist:
@@ -156,7 +373,8 @@ def run_copy_paper_backtest(
                 pos.avg_entry = exit_price
 
         equity += realized - fee_paid
-        closed_pnls.append(realized)
+        if abs(realized) > 1e-12:
+            closed_pnls.append(realized)
         peak_equity = max(peak_equity, equity)
         if peak_equity > 0:
             max_dd = max(max_dd, ((peak_equity - equity) / peak_equity) * 100.0)
@@ -229,7 +447,7 @@ def write_backtest_report(
 ) -> None:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     lines = [
-        "# Copy-paper backtest (fill-follow)",
+        "# Copy-paper backtest (round-trip copy)",
         "",
         f"Generated: **{now}**",
         "",
@@ -242,16 +460,46 @@ def write_backtest_report(
         "",
         "## Summary",
         "",
-        "| Wallet | Fills | Paper legs | Return % (realized) | Return % (MTM) | Win rate % | "
-        "End equity (MTM) | Open $ | Max DD % | Fees |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Wallet | Verdict | Fills | Trips sim | Copyability | Return % | Win rate % | "
+        "End equity | Max DD % | Fees |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for r in results:
+        verdict = r.verdict or "—"
         lines.append(
-            f"| `{r.wallet}` | {r.fill_count} | {r.trade_count} | {r.total_return_pct:.2f} | "
-            f"{r.total_return_mtm_pct:.2f} | {r.win_rate_pct:.1f} | ${r.ending_equity_mtm:,.2f} | "
-            f"${r.open_notional_usd:,.0f} | {r.max_drawdown_pct:.2f} | ${r.total_fees:,.2f} |"
+            f"| `{r.wallet}` | {verdict} | {r.fill_count} | {r.round_trips_simulated} | "
+            f"{r.copyability_score:.3f} | {r.total_return_pct:.2f} | {r.win_rate_pct:.1f} | "
+            f"${r.ending_equity:,.2f} | {r.max_drawdown_pct:.2f} | ${r.total_fees:,.2f} |"
         )
+
+    dq_lines = ["", "## Data quality warnings", ""]
+    any_dq = False
+    for r in results:
+        if not r.fill_dir_quality:
+            continue
+        q = r.fill_dir_quality
+        any_dq = True
+        dq_lines.append(
+            f"- `{r.wallet}`: {q['fills_missing_fill_dir']:,} / {q['total_fills']:,} fills "
+            f"missing fill_dir ({q['pct_missing'] * 100:.1f}%) — **{q['recommendation']}**"
+        )
+    if any_dq:
+        lines.extend(dq_lines)
+
+    lines.extend(
+        [
+            "",
+            "## Methodology note",
+            "",
+            "Trust hierarchy (wallet evaluation):",
+            "",
+            "1. **Exchange closedPnl (scaled)** — ground truth from HL close rows.",
+            "2. **FIFO + slippage (scaled)** — validation on full tape.",
+            "3. **Round-trip copy** — paper sim; complete trips only (see skip breakdown in appendix).",
+            "4. **Fill-follow legacy** — per-fill mirror; bot stress test only.",
+            "",
+        ]
+    )
 
     lines.extend(["", "## Interpretation", ""])
     for r in results:
@@ -264,12 +512,14 @@ def write_backtest_report(
             if r.first_fill and r.last_fill:
                 span = f" ({r.first_fill.date()} → {r.last_fill.date()})"
             lines.append(
-                f"- History span{span}: **{r.coins_traded}** coins, **{r.fill_count}** fills mirrored."
+                f"- History span{span}: **{r.coins_traded}** coins, **{r.fill_count}** fills; "
+                f"**{r.round_trips_simulated}** / **{r.total_round_trips_detected}** round trips copied "
+                f"(copyability **{r.copyability_score:.3f}**)."
             )
             lines.append(
-                f"- Simulated return **{r.total_return_pct:.2f}%** realized / "
-                f"**{r.total_return_mtm_pct:.2f}%** mark-to-market; "
-                f"**{r.win_rate_pct:.1f}%** win rate on closing legs (not leaderboard hit rate)."
+                f"- Simulated return **{r.total_return_pct:.2f}%**; "
+                f"**{r.win_rate_pct:.1f}%** win rate on simulated trips; "
+                f"avg PnL/trip **${r.avg_pnl_per_trade:,.4f}**."
             )
             if r.open_notional_usd > 0:
                 lines.append(f"- Open paper exposure at last fill: **${r.open_notional_usd:,.0f}**.")
@@ -279,7 +529,7 @@ def write_backtest_report(
         [
             "## Caveats",
             "",
-            "- This is a **naive fill mirror**, not Hyperliquid's true position accounting.",
+            "- Round-trip copy skips incomplete trips when any leg fails dust/risk filters.",
             "- Does not model funding, liquidations, or partial user-channel gaps.",
             "- Past copy-paper results do not guarantee live copy profitability.",
             "",
@@ -287,6 +537,46 @@ def write_backtest_report(
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def format_benchmark_comparison(bench: CopyPaperBenchmarks, *, copy_scale: float) -> str:
+    """Markdown table comparing trust-hierarchy methods on the same tape."""
+
+    from hyperion_pipeline.analytics.copy_paper_simulator import format_skip_breakdown
+    from hyperion_pipeline.analytics.sizing_engine import format_sizing_engine_summary
+
+    rt = bench.round_trip
+    leg = bench.fill_follow_legacy
+    skip_section = format_skip_breakdown(
+        total_round_trips_detected=rt.total_round_trips_detected,
+        round_trips_simulated=rt.round_trips_simulated,
+        round_trips_skipped=rt.round_trips_skipped,
+        skip_counts_by_reason=rt.skip_counts_by_reason,
+        copyability_score=rt.copyability_score,
+    )
+    dyn = " · dynamic sizing" if rt.use_dynamic_sizing else ""
+    parts = [
+        "",
+        "## PnL methodology comparison (same tape)",
+        "",
+        "| Method | Return % | End equity | Notes |",
+        "| --- | ---: | ---: | --- |",
+        f"| Exchange closedPnl × scale | {bench.exchange_closed_return_pct:.2f} | "
+        f"${bench.exchange_closed_ending_equity:,.2f} | ground truth |",
+        f"| FIFO + slippage × scale | {bench.fifo_slippage_return_pct:.2f} | "
+        f"${bench.fifo_slippage_ending_equity:,.2f} | {bench.fifo_closed_trips:,} closed trips |",
+        f"| Round-trip copy | {rt.total_return_pct:.2f} | ${rt.ending_equity:,.2f} | "
+        f"copyability {rt.copyability_score:.3f}{dyn} |",
+        f"| Fill-follow legacy | {leg.total_return_mtm_pct:.2f} | ${leg.ending_equity_mtm:,.2f} | "
+        f"{bench.mirror_coverage_pct:.1f}% fills mirrored |",
+        "",
+        f"Rows with `fill_dir`: **{bench.fills_with_dir_pct:.1f}%** of fills.",
+        "",
+        skip_section,
+    ]
+    if rt.sizing_summary is not None:
+        parts.append(format_sizing_engine_summary(rt.sizing_summary))
+    return "\n".join(parts)
 
 
 def format_db_deep_appendix(

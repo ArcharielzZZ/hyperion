@@ -67,6 +67,30 @@ class Settings(BaseSettings):
         description="Comma-separated 0x addresses ingester subscribes to.",
     )
 
+    risk_per_trade_pct: float = Field(default=0.01, validation_alias="RISK_PER_TRADE_PCT")
+    max_position_pct: float = Field(default=0.15, validation_alias="MAX_POSITION_PCT")
+    max_total_exposure_pct: float = Field(default=0.50, validation_alias="MAX_TOTAL_EXPOSURE_PCT")
+    circuit_breaker_pct: float = Field(default=0.20, validation_alias="CIRCUIT_BREAKER_PCT")
+    min_trade_usd: float = Field(default=1.0, validation_alias="MIN_TRADE_USD")
+    default_stop_pct: float = Field(default=0.03, validation_alias="DEFAULT_STOP_PCT")
+    kelly_fraction: float = Field(default=0.25, validation_alias="KELLY_FRACTION")
+    sharpe_window: int = Field(default=30, ge=5, validation_alias="SHARPE_WINDOW")
+    rebalance_every_n_trades: int = Field(default=10, ge=1, validation_alias="REBALANCE_EVERY_N_TRADES")
+    copy_use_dynamic_sizing: bool = Field(default=True, validation_alias="COPY_USE_DYNAMIC_SIZING")
+    ema_span: int = Field(default=20, ge=3, validation_alias="EMA_SPAN")
+    # Whale expected edge per trade must be >= multiplier × round-trip cost (fees + slippage).
+    # 2.0 is mathematical break-even; 3.5 adds safety margin for variance and durable edge.
+    # Raise to 5.0 for a conservative live-bot shortlist. Lower to 2.0 for research.
+    edge_cost_multiplier: float = Field(default=3.5, validation_alias="EDGE_COST_MULTIPLIER")
+    min_win_rate: float = Field(default=0.45, validation_alias="MIN_WIN_RATE")
+    max_size_increase_factor: float = Field(default=1.05, validation_alias="MAX_SIZE_INCREASE_FACTOR")
+    # Minimum fraction of FIFO trips that must survive filters to simulate a wallet.
+    # Below 30%, the copied subset is too sparse to represent the whale's strategy.
+    # Raise to 0.50 for a tighter live-bot shortlist.
+    min_copyability: float = Field(default=0.30, validation_alias="MIN_COPYABILITY")
+    # Minimum FIFO round trips before we trust win-rate / edge statistics.
+    min_trips_detected: int = Field(default=20, ge=1, validation_alias="MIN_TRIPS_DETECTED")
+
     @field_validator("database_url", mode="before")
     @classmethod
     def _normalize_asyncpg_url(cls, value: object) -> object:
