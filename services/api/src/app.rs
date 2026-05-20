@@ -57,6 +57,7 @@ pub async fn run(settings: Settings) -> Result<()> {
             get(simulation_journal),
         )
         .route("/internal/data/freshness", get(data_freshness_live))
+        .route("/internal/data/week1-health", get(week1_health))
         .route(
             "/internal/scanner/coverage/snapshots",
             get(scanner_coverage_snapshots).post(record_scanner_coverage_snapshot),
@@ -341,4 +342,23 @@ async fn ingest_connection_events(
         .await
         .map(|items| Json(serde_json::json!({ "items": items })))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+async fn week1_health(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let summary = state
+        .repository
+        .week1_health_summary()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let channels = state
+        .repository
+        .week1_channel_health()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(serde_json::json!({
+        "summary": summary,
+        "channels": channels,
+    })))
 }

@@ -70,6 +70,10 @@ The current implementation is a serious starter foundation:
 
 See `docs/architecture.md` and `docs/local-development.md` for deeper details.
 
-## Week 1 data platform
+## Week 1 data platform (closed via ritual)
 
-Observability, daily discovery cohort snapshots, ingest lifecycle auditing, and export tooling are documented in `docs/WEEK1_DATA_PLATFORM.md`. Operational shortcuts: `make week1-discovery-snapshot`, `make week1-scanner-snapshot`, `make week1-nightly-export`.
+Observability, gap detection, cohort snapshots, and export tooling: `docs/WEEK1_DATA_PLATFORM.md`.
+
+**Close Week 1:** `make week1-close` (requires live ingest + trader-engine, or `-AllowStoppedServices`).
+
+**Week 2:** `docs/WEEK2_FEATURE_LAYER.md`.

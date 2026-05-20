@@ -1,7 +1,7 @@
 SHELL := powershell.exe
 .SHELLFLAGS := -NoProfile -Command
 
-.PHONY: dev-up dev-down migrate check fmt lint run-api run-ingest run-trader run-signal run-execution week1-discovery-snapshot week1-scanner-snapshot week1-nightly-export
+.PHONY: dev-up dev-down migrate check fmt lint run-api run-ingest run-trader run-signal run-execution week1-discovery-snapshot week1-scanner-snapshot week1-nightly-export week1-gap-report week1-close week1-install-tasks
 
 dev-up:
 	powershell -ExecutionPolicy Bypass -File infra/scripts/dev-up.ps1
@@ -44,6 +44,15 @@ week1-scanner-snapshot:
 
 week1-nightly-export:
 	powershell -ExecutionPolicy Bypass -File infra/scripts/week1-nightly-export.ps1
+
+week1-gap-report:
+	powershell -ExecutionPolicy Bypass -File infra/scripts/week1-gap-report.ps1
+
+week1-close:
+	powershell -ExecutionPolicy Bypass -File infra/scripts/week1-close.ps1
+
+week1-install-tasks:
+	powershell -ExecutionPolicy Bypass -File infra/scripts/week1-install-scheduled-tasks.ps1
 
 discover-whales:
 	python infra/scripts/discover-hyperliquid-whales.py --leaderboard-cache analytics/research/hyperliquid_leaderboard_cache.json --elite --demote-existing-whales --min-all-time-vlm 25000000 --min-hit-rate 55 --enrich-top-n 400 --max-promote 150 --apply-db

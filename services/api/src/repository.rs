@@ -723,6 +723,39 @@ impl Repository {
         Ok(rows)
     }
 
+    /// Week 1 closure rollup (gap detector + snapshot cadence).
+    pub async fn week1_health_summary(&self) -> Result<serde_json::Value> {
+        let row = sqlx::query_scalar::<_, serde_json::Value>(
+            r#"SELECT to_jsonb(v) FROM v_week1_health_summary v"#,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    /// Per-channel lag status (`ok` / `warn` / `critical` / `missing`).
+    pub async fn week1_channel_health(&self) -> Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query_scalar::<_, serde_json::Value>(
+            r#"SELECT jsonb_build_object(
+                    'channel', channel,
+                    'max_ts', max_ts,
+                    'lag_sec', lag_sec,
+                    'status', status
+                )
+                FROM v_week1_data_channel_health
+                ORDER BY CASE status
+                    WHEN 'critical' THEN 1
+                    WHEN 'warn' THEN 2
+                    WHEN 'missing' THEN 3
+                    ELSE 4
+                END,
+                channel"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     /// Recent ingest websocket lifecycle events (newest first).
     pub async fn ingest_connection_events(&self, limit: i64) -> Result<Vec<serde_json::Value>> {
         let lim = limit.clamp(1, 1000);

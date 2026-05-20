@@ -37,6 +37,11 @@ data/
 *.dump
 *.sql.gz
 pg_dump/
+exports/week1/*
+!exports/week1/.gitkeep
+!exports/week1/reports/
+exports/week1/reports/*
+!exports/week1/reports/.gitkeep
 
 # --- Live scoop + service logs ---
 analytics/research/live_scoop_logs/*
