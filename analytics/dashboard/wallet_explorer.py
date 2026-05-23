@@ -22,15 +22,20 @@ Workflow
 
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
-from datetime import timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import plotly.graph_objects as go
 import polars as pl
 import requests
-from dash import Dash, Input, Output, State, dcc, html
+from dash import ALL, Dash, Input, Output, State, ctx, dcc, html, no_update
 from plotly.subplots import make_subplots
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import twitter_pulls  # noqa: E402
 
 # --------------------------------------------------------------------------- #
 # Constants
@@ -62,6 +67,11 @@ BG_PAPER = "#070714"
 BG_PLOT = "#0a0a1e"
 GRID = "#14142a"
 TEXT_DIM = "#c0c0e0"
+TWEET_CYAN = "#4fc3f7"
+TWEET_AMBER = "#ffb74d"
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+FORCE_PULL_TWITTER_SCRIPT = REPO_ROOT / "analytics" / "scripts" / "force_pull_twitter.py"
 
 
 # --------------------------------------------------------------------------- #
@@ -231,6 +241,7 @@ def build_figure(
     candles_df: pl.DataFrame,
     buckets_joined: pl.DataFrame,
     wallet: str,
+    tweets_df: pl.DataFrame | None = None,
 ) -> go.Figure:
     fig = make_subplots(
         rows=2,
@@ -301,6 +312,9 @@ def build_figure(
             kind="close_short", letter="S", color=SELL_RED,
             anchor="low",  offset_mult=0.972, name="Close Short",
         )
+
+    if tweets_df is not None and not tweets_df.is_empty() and not candles_df.is_empty():
+        _add_tweet_markers(fig, tweets_df, candles_df, interval)
 
     fig.update_layout(
         height=820,
@@ -379,6 +393,127 @@ def _add_marker_trace(
     )
 
 
+def _add_tweet_markers(
+    fig: go.Figure,
+    tweets_df: pl.DataFrame,
+    candles_df: pl.DataFrame,
+    interval: str,
+) -> None:
+    """Render tweet bubbles on a dedicated row pinned to the bottom of the price subplot.
+
+    TradingView-style news ribbon: a thin band just above the x-axis. The
+    y-anchor is the global candle low; the row offset is a percent of the
+    candle-price-range so the markers do not overlap candles.
+    """
+    if tweets_df.is_empty() or candles_df.is_empty():
+        return
+
+    low_min = float(candles_df["low"].min())
+    high_max = float(candles_df["high"].max())
+    span = max(high_max - low_min, 1e-9)
+
+    t_min_naive = candles_df["timestamp"].min()
+    t_max_naive = candles_df["timestamp"].max()
+    t_min = _ensure_utc(t_min_naive)
+    t_max = _ensure_utc(t_max_naive)
+
+    tweets = tweets_df.with_columns(
+        pl.col("created_at").cast(pl.Datetime("ms", time_zone="UTC"))
+    )
+    in_range, before, after = twitter_pulls.split_in_range_and_out_of_range(
+        tweets, t_min, t_max
+    )
+
+    band_y = low_min - span * 0.05
+
+    if not in_range.is_empty():
+        buckets = twitter_pulls.aggregate_tweets_to_buckets(in_range, interval)
+        if not buckets.is_empty():
+            xs = buckets["bucket"].to_list()
+            counts = buckets["count"].to_list()
+            id_lists = buckets["ids"].to_list()
+            ys = [band_y] * len(xs)
+            texts = [f"\U0001F4AC {n}" for n in counts]
+            hovers = [
+                f"<b>{n} Tweet{'s' if n != 1 else ''}</b><br>"
+                f"{xs[i].strftime('%Y-%m-%d %H:%M') if hasattr(xs[i], 'strftime') else xs[i]}"
+                for i, n in enumerate(counts)
+            ]
+            fig.add_trace(
+                go.Scatter(
+                    x=xs,
+                    y=ys,
+                    mode="text",
+                    text=texts,
+                    textfont=dict(color=TWEET_CYAN, size=15),
+                    textposition="middle center",
+                    name="Tweets",
+                    hovertext=hovers,
+                    hovertemplate="%{hovertext}<extra></extra>",
+                    customdata=[{"kind": "tweets", "ids": ids} for ids in id_lists],
+                ),
+                row=1,
+                col=1,
+            )
+
+    _add_edge_bubble(
+        fig, before, anchor_x=t_min, band_y=band_y,
+        color=TWEET_AMBER, label_suffix="vorher",
+    )
+    _add_edge_bubble(
+        fig, after, anchor_x=t_max, band_y=band_y,
+        color=TWEET_AMBER, label_suffix="danach",
+    )
+
+
+def _add_edge_bubble(
+    fig: go.Figure,
+    tweets: pl.DataFrame,
+    *,
+    anchor_x,
+    band_y: float,
+    color: str,
+    label_suffix: str,
+) -> None:
+    if tweets.is_empty():
+        return
+    n = tweets.height
+    ids = tweets["id"].to_list()
+    oldest = tweets["created_at"].min()
+    newest = tweets["created_at"].max()
+    hover = (
+        f"<b>{n} Tweets {label_suffix}</b><br>"
+        f"Aelteste: {oldest}<br>Neueste: {newest}"
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=[anchor_x],
+            y=[band_y],
+            mode="text",
+            text=[f"\U0001F4AC* {n}"],
+            textfont=dict(color=color, size=15),
+            textposition="middle center",
+            name=f"Tweets {label_suffix}",
+            hovertext=[hover],
+            hovertemplate="%{hovertext}<extra></extra>",
+            customdata=[{"kind": "tweets", "ids": ids}],
+        ),
+        row=1,
+        col=1,
+    )
+
+
+def _ensure_utc(dt):
+    if dt is None:
+        return None
+    if isinstance(dt, datetime):
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    try:
+        return datetime.fromisoformat(str(dt)).replace(tzinfo=timezone.utc)
+    except Exception:
+        return dt
+
+
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
@@ -415,7 +550,7 @@ def _empty_figure(msg: str) -> go.Figure:
 # Dash app
 # --------------------------------------------------------------------------- #
 
-app = Dash(__name__, title="Hyperion Wallet Explorer")
+app = Dash(__name__, title="Hyperion Wallet Explorer", suppress_callback_exceptions=True)
 
 app.layout = html.Div(
     style={
@@ -424,6 +559,7 @@ app.layout = html.Div(
         "minHeight": "100vh",
         "fontFamily": "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
         "padding": "20px",
+        "position": "relative",
     },
     children=[
         html.H2("Hyperion - Wallet Explorer", style={"margin": "0 0 4px 0"}),
@@ -492,6 +628,69 @@ app.layout = html.Div(
             ],
         ),
 
+        html.Div(
+            style={
+                "display": "flex", "gap": "10px", "alignItems": "center",
+                "flexWrap": "wrap", "marginBottom": "8px",
+                "padding": "10px", "border": f"1px solid {GRID}",
+                "borderRadius": "6px", "backgroundColor": "#0c0c20",
+            },
+            children=[
+                html.Span("Twitter Force Pull:", style={"fontWeight": 600, "color": TWEET_CYAN}),
+                dcc.Input(
+                    id="tw-handle",
+                    type="text",
+                    placeholder="@handle",
+                    style={
+                        "width": "160px", "padding": "6px",
+                        "backgroundColor": BG_PLOT, "color": TEXT_DIM,
+                        "border": f"1px solid {GRID}", "borderRadius": "4px",
+                        "fontFamily": "monospace",
+                    },
+                ),
+                dcc.Input(
+                    id="tw-from",
+                    type="text",
+                    placeholder="Von YYYY-MM-DD",
+                    style={
+                        "width": "150px", "padding": "6px",
+                        "backgroundColor": BG_PLOT, "color": TEXT_DIM,
+                        "border": f"1px solid {GRID}", "borderRadius": "4px",
+                        "fontFamily": "monospace",
+                    },
+                ),
+                dcc.Input(
+                    id="tw-to",
+                    type="text",
+                    placeholder="Bis YYYY-MM-DD",
+                    style={
+                        "width": "150px", "padding": "6px",
+                        "backgroundColor": BG_PLOT, "color": TEXT_DIM,
+                        "border": f"1px solid {GRID}", "borderRadius": "4px",
+                        "fontFamily": "monospace",
+                    },
+                ),
+                html.Button(
+                    "Force Pull Twitter",
+                    id="tw-pull-btn", n_clicks=0,
+                    style={
+                        "padding": "6px 14px",
+                        "backgroundColor": "#1e3a5f", "color": TWEET_CYAN,
+                        "border": f"1px solid {TWEET_CYAN}", "borderRadius": "4px",
+                        "cursor": "pointer", "fontWeight": 600,
+                    },
+                ),
+                html.Span(
+                    id="tw-pull-status",
+                    style={"fontSize": "12px", "marginLeft": "8px", "opacity": 0.85},
+                ),
+            ],
+        ),
+        html.Div(
+            "Hinweis: Beim ersten Mal oeffnet sich Chrome - bei x.com einloggen, dann laeuft der Pull automatisch.",
+            style={"fontSize": "11px", "opacity": 0.55, "marginBottom": "12px"},
+        ),
+
         dcc.Loading(
             id="chart-loading",
             type="dot",
@@ -504,7 +703,115 @@ app.layout = html.Div(
             ),
         ),
 
+        # History panel - floating top-right
+        html.Div(
+            id="tw-history-panel",
+            style={
+                "position": "fixed",
+                "top": "20px",
+                "right": "20px",
+                "width": "360px",
+                "maxHeight": "70vh",
+                "overflowY": "auto",
+                "backgroundColor": "#0c0c20",
+                "border": f"1px solid {GRID}",
+                "borderRadius": "6px",
+                "padding": "10px",
+                "zIndex": 1000,
+                "boxShadow": "0 4px 16px rgba(0,0,0,0.5)",
+            },
+            children=[
+                html.Div(
+                    "Twitter Pulls",
+                    style={
+                        "fontWeight": 700, "color": TWEET_CYAN,
+                        "marginBottom": "8px", "fontSize": "13px",
+                    },
+                ),
+                html.Div(id="tw-history-list"),
+            ],
+        ),
+
+        # Side drawer (tweet detail) - hidden by default
+        html.Div(
+            id="tw-drawer",
+            style={
+                "position": "fixed",
+                "top": "0",
+                "right": "0",
+                "width": "420px",
+                "height": "100vh",
+                "backgroundColor": "#0a0a1e",
+                "borderLeft": f"1px solid {GRID}",
+                "boxShadow": "-6px 0 24px rgba(0,0,0,0.6)",
+                "padding": "16px",
+                "overflowY": "auto",
+                "zIndex": 2000,
+                "transform": "translateX(100%)",
+                "transition": "transform 0.25s ease-in-out",
+            },
+            children=[
+                html.Div(
+                    style={"display": "flex", "justifyContent": "space-between",
+                           "alignItems": "center", "marginBottom": "10px"},
+                    children=[
+                        html.Span(
+                            id="tw-drawer-title",
+                            style={"fontWeight": 700, "color": TWEET_CYAN, "fontSize": "14px"},
+                        ),
+                        html.Button(
+                            "x",
+                            id="tw-drawer-close",
+                            n_clicks=0,
+                            style={
+                                "backgroundColor": "transparent",
+                                "color": TEXT_DIM,
+                                "border": f"1px solid {GRID}",
+                                "borderRadius": "4px",
+                                "padding": "2px 10px",
+                                "cursor": "pointer",
+                                "fontSize": "16px",
+                            },
+                        ),
+                    ],
+                ),
+                html.Div(
+                    id="tw-drawer-nav",
+                    style={"display": "flex", "gap": "8px", "marginBottom": "10px"},
+                    children=[
+                        html.Button("< Vor.", id="tw-drawer-prev", n_clicks=0,
+                                    style={"padding": "4px 10px",
+                                           "backgroundColor": "#1e1e3a",
+                                           "color": TEXT_DIM,
+                                           "border": f"1px solid {GRID}",
+                                           "borderRadius": "4px",
+                                           "cursor": "pointer"}),
+                        html.Span(id="tw-drawer-counter",
+                                  style={"alignSelf": "center", "fontSize": "12px",
+                                         "opacity": 0.7}),
+                        html.Button("Naechster >", id="tw-drawer-next", n_clicks=0,
+                                    style={"padding": "4px 10px",
+                                           "backgroundColor": "#1e1e3a",
+                                           "color": TEXT_DIM,
+                                           "border": f"1px solid {GRID}",
+                                           "borderRadius": "4px",
+                                           "cursor": "pointer"}),
+                    ],
+                ),
+                html.Div(id="tw-drawer-body"),
+            ],
+        ),
+
+        dcc.ConfirmDialog(
+            id="tw-confirm-delete",
+            message="Pull samt Parquet-Datei wirklich loeschen?",
+        ),
+
         dcc.Store(id="wallet-store"),
+        dcc.Store(id="tw-history-store", data=twitter_pulls.load_history()),
+        dcc.Store(id="tw-drawer-store", data={"open": False, "ids": [], "idx": 0}),
+        dcc.Store(id="tw-pending-delete"),
+        dcc.Interval(id="tw-status-interval", interval=1000, disabled=True),
     ],
 )
 
@@ -574,9 +881,15 @@ def on_load_wallet(_n_clicks: int, _n_submit: int, wallet: str | None):
     Output("chart", "figure"),
     Input("coin-dd", "value"),
     Input("interval-dd", "value"),
+    Input("tw-history-store", "data"),
     State("wallet-store", "data"),
 )
-def on_chart_change(coin: str | None, interval: str | None, wallet: str | None):
+def on_chart_change(
+    coin: str | None,
+    interval: str | None,
+    _history,
+    wallet: str | None,
+):
     if not wallet or not coin or not interval:
         return _empty_figure("Bitte Wallet laden und Coin auswaehlen.")
 
@@ -605,7 +918,338 @@ def on_chart_change(coin: str | None, interval: str | None, wallet: str | None):
     buckets = aggregate_trades(df, coin, interval)
     buckets_joined = join_buckets_with_candles(buckets, candles_df)
 
-    return build_figure(coin, interval, candles_df, buckets_joined, wallet)
+    tweets_df = twitter_pulls.load_visible_tweets()
+
+    return build_figure(
+        coin, interval, candles_df, buckets_joined, wallet, tweets_df=tweets_df,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Twitter callbacks
+# --------------------------------------------------------------------------- #
+
+def _render_history_rows(history: list[dict]) -> list:
+    if not history:
+        return [
+            html.Div(
+                "Noch keine Pulls.",
+                style={"fontSize": "12px", "opacity": 0.6},
+            )
+        ]
+    rows = []
+    for h in history:
+        key = {"handle": h["handle"], "from": h["from"], "to": h["to"]}
+        rows.append(
+            html.Div(
+                style={
+                    "display": "grid",
+                    "gridTemplateColumns": "20px 1fr auto",
+                    "alignItems": "center",
+                    "gap": "6px",
+                    "padding": "6px",
+                    "borderBottom": f"1px solid {GRID}",
+                    "fontSize": "12px",
+                },
+                children=[
+                    dcc.Checklist(
+                        id={"role": "tw-row-visible", "key": json.dumps(key, sort_keys=True)},
+                        options=[{"label": "", "value": "v"}],
+                        value=["v"] if h.get("visible", True) else [],
+                        style={"display": "inline-block"},
+                        inputStyle={"transform": "scale(1.1)"},
+                    ),
+                    html.Div(
+                        children=[
+                            html.Div(
+                                f"@{h['handle']}",
+                                style={"fontWeight": 600, "color": TWEET_CYAN},
+                            ),
+                            html.Div(
+                                f"{h['from']}  ->  {h['to']}",
+                                style={"opacity": 0.7, "fontSize": "11px"},
+                            ),
+                            html.Div(
+                                f"{h.get('count', 0)} Tweets",
+                                style={"opacity": 0.6, "fontSize": "11px"},
+                            ),
+                        ],
+                    ),
+                    html.Button(
+                        "x",
+                        id={"role": "tw-row-delete", "key": json.dumps(key, sort_keys=True)},
+                        n_clicks=0,
+                        style={
+                            "backgroundColor": "transparent",
+                            "color": SELL_RED,
+                            "border": f"1px solid {SELL_RED}",
+                            "borderRadius": "3px",
+                            "padding": "2px 8px",
+                            "cursor": "pointer",
+                            "fontSize": "12px",
+                        },
+                    ),
+                ],
+            )
+        )
+    return rows
+
+
+@app.callback(
+    Output("tw-history-list", "children"),
+    Input("tw-history-store", "data"),
+)
+def on_render_history(history):
+    return _render_history_rows(history or [])
+
+
+@app.callback(
+    Output("tw-pull-status", "children"),
+    Output("tw-pull-status", "style"),
+    Output("tw-status-interval", "disabled"),
+    Output("tw-history-store", "data", allow_duplicate=True),
+    Input("tw-pull-btn", "n_clicks"),
+    Input("tw-status-interval", "n_intervals"),
+    State("tw-handle", "value"),
+    State("tw-from", "value"),
+    State("tw-to", "value"),
+    State("tw-history-store", "data"),
+    prevent_initial_call=True,
+)
+def on_force_pull(_n_clicks, _n_intervals, handle, frm, to, history):
+    trigger = ctx.triggered_id
+    base_style = {"fontSize": "12px", "marginLeft": "8px"}
+
+    if trigger == "tw-pull-btn":
+        if not handle or not handle.strip():
+            return ("Bitte @handle angeben.",
+                    {**base_style, "color": SELL_RED}, True, no_update)
+        try:
+            datetime.strptime((frm or "").strip(), "%Y-%m-%d")
+            datetime.strptime((to or "").strip(), "%Y-%m-%d")
+        except ValueError:
+            return ("Datum muss YYYY-MM-DD sein.",
+                    {**base_style, "color": SELL_RED}, True, no_update)
+
+        clean_handle = handle.strip().lstrip("@")
+        try:
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    str(FORCE_PULL_TWITTER_SCRIPT),
+                    "--handle", clean_handle,
+                    "--from", frm.strip(),
+                    "--to", to.strip(),
+                ],
+                cwd=str(REPO_ROOT),
+            )
+        except Exception as exc:
+            return (f"Konnte Scraper nicht starten: {exc}",
+                    {**base_style, "color": SELL_RED}, True, no_update)
+
+        return (f"Starte Pull fuer @{clean_handle} ...",
+                {**base_style, "color": TWEET_CYAN}, False, no_update)
+
+    status = twitter_pulls.load_status()
+    state = status.get("state", "")
+    msg = status.get("message", "")
+    found = status.get("found", 0)
+    last_date = status.get("last_date", "")
+
+    if state == "done":
+        new_history = twitter_pulls.load_history()
+        text = f"Fertig - {found} Tweets gespeichert."
+        return text, {**base_style, "color": BUY_GREEN}, True, new_history
+
+    if state == "error":
+        err = status.get("error", "")
+        return (f"Fehler: {err or msg}",
+                {**base_style, "color": SELL_RED}, True, no_update)
+
+    parts = [msg or "Laeuft ..."]
+    if found:
+        parts.append(f"{found} Tweets")
+    if last_date:
+        parts.append(f"bei {last_date}")
+    return (" - ".join(parts),
+            {**base_style, "color": TWEET_CYAN}, False, no_update)
+
+
+@app.callback(
+    Output("tw-history-store", "data", allow_duplicate=True),
+    Input({"role": "tw-row-visible", "key": ALL}, "value"),
+    State({"role": "tw-row-visible", "key": ALL}, "id"),
+    prevent_initial_call=True,
+)
+def on_visibility_change(values, ids):
+    if not ids:
+        return no_update
+    history = twitter_pulls.load_history()
+    changed = False
+    for val, ident in zip(values, ids):
+        key = json.loads(ident["key"])
+        visible = "v" in (val or [])
+        for h in history:
+            if (h.get("handle") == key["handle"]
+                    and h.get("from") == key["from"]
+                    and h.get("to") == key["to"]):
+                if bool(h.get("visible", True)) != visible:
+                    h["visible"] = visible
+                    changed = True
+    if not changed:
+        return no_update
+    twitter_pulls.save_history(history)
+    return history
+
+
+@app.callback(
+    Output("tw-confirm-delete", "displayed"),
+    Output("tw-pending-delete", "data"),
+    Input({"role": "tw-row-delete", "key": ALL}, "n_clicks"),
+    State({"role": "tw-row-delete", "key": ALL}, "id"),
+    prevent_initial_call=True,
+)
+def on_delete_clicked(n_clicks_list, ids):
+    if not any(n_clicks_list or []):
+        return False, no_update
+    triggered = ctx.triggered_id
+    if not triggered or not isinstance(triggered, dict):
+        return False, no_update
+    key = json.loads(triggered["key"])
+    return True, key
+
+
+@app.callback(
+    Output("tw-history-store", "data", allow_duplicate=True),
+    Input("tw-confirm-delete", "submit_n_clicks"),
+    State("tw-pending-delete", "data"),
+    prevent_initial_call=True,
+)
+def on_delete_confirmed(_submit, key):
+    if not key:
+        return no_update
+    new_history = twitter_pulls.delete_pull(key["handle"], key["from"], key["to"])
+    return new_history
+
+
+@app.callback(
+    Output("tw-drawer-store", "data"),
+    Input("chart", "clickData"),
+    Input("tw-drawer-close", "n_clicks"),
+    Input("tw-drawer-prev", "n_clicks"),
+    Input("tw-drawer-next", "n_clicks"),
+    State("tw-drawer-store", "data"),
+    prevent_initial_call=True,
+)
+def on_drawer_update(click_data, _close, _prev, _next, store):
+    store = store or {"open": False, "ids": [], "idx": 0}
+    trigger = ctx.triggered_id
+
+    if trigger == "tw-drawer-close":
+        return {**store, "open": False}
+
+    if trigger == "tw-drawer-prev":
+        idx = max(0, store.get("idx", 0) - 1)
+        return {**store, "idx": idx}
+
+    if trigger == "tw-drawer-next":
+        ids = store.get("ids", [])
+        idx = min(len(ids) - 1, store.get("idx", 0) + 1)
+        return {**store, "idx": idx}
+
+    if trigger == "chart" and click_data:
+        points = click_data.get("points") or []
+        if not points:
+            return no_update
+        cd = points[0].get("customdata")
+        if isinstance(cd, dict) and cd.get("kind") == "tweets":
+            ids = list(cd.get("ids") or [])
+            if ids:
+                return {"open": True, "ids": ids, "idx": 0}
+        return no_update
+
+    return no_update
+
+
+@app.callback(
+    Output("tw-drawer", "style"),
+    Output("tw-drawer-title", "children"),
+    Output("tw-drawer-counter", "children"),
+    Output("tw-drawer-body", "children"),
+    Input("tw-drawer-store", "data"),
+)
+def on_render_drawer(store):
+    base_style = {
+        "position": "fixed",
+        "top": "0",
+        "right": "0",
+        "width": "420px",
+        "height": "100vh",
+        "backgroundColor": "#0a0a1e",
+        "borderLeft": f"1px solid {GRID}",
+        "boxShadow": "-6px 0 24px rgba(0,0,0,0.6)",
+        "padding": "16px",
+        "overflowY": "auto",
+        "zIndex": 2000,
+        "transition": "transform 0.25s ease-in-out",
+    }
+
+    store = store or {"open": False, "ids": [], "idx": 0}
+    if not store.get("open") or not store.get("ids"):
+        return ({**base_style, "transform": "translateX(100%)"},
+                "", "", "")
+
+    ids = store["ids"]
+    idx = max(0, min(len(ids) - 1, store.get("idx", 0)))
+    tweets = twitter_pulls.tweets_for_ids(ids)
+    if not tweets:
+        return ({**base_style, "transform": "translateX(0)"},
+                "Tweets nicht gefunden", "", html.Div("Pull-Datei eventuell geloescht."))
+
+    idx = max(0, min(len(tweets) - 1, idx))
+    t = tweets[idx]
+    title = f"@{t['handle']} - {t['created_at']}"
+    counter = f"{idx + 1} / {len(tweets)}"
+
+    media_children = []
+    for url in t.get("media_urls") or []:
+        if url.lower().endswith(".mp4"):
+            media_children.append(
+                html.Video(
+                    src=url, controls=True,
+                    style={"width": "100%", "marginTop": "8px", "borderRadius": "4px"},
+                )
+            )
+        else:
+            media_children.append(
+                html.Img(
+                    src=url,
+                    style={"width": "100%", "marginTop": "8px", "borderRadius": "4px"},
+                )
+            )
+
+    body = html.Div(
+        children=[
+            html.Div(
+                t.get("text") or "",
+                style={"whiteSpace": "pre-wrap", "lineHeight": "1.4",
+                       "fontSize": "13px", "marginBottom": "8px"},
+            ),
+            html.Div(media_children),
+            html.A(
+                "Auf X oeffnen",
+                href=t.get("url") or "#",
+                target="_blank",
+                style={"display": "inline-block", "marginTop": "12px",
+                       "color": TWEET_CYAN, "textDecoration": "none",
+                       "border": f"1px solid {TWEET_CYAN}",
+                       "padding": "4px 10px", "borderRadius": "4px"},
+            ),
+        ],
+    )
+
+    return ({**base_style, "transform": "translateX(0)"},
+            title, counter, body)
 
 
 # --------------------------------------------------------------------------- #

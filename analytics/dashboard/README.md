@@ -59,3 +59,56 @@ Browser oeffnen: <http://127.0.0.1:8050>
 ## Frische Daten
 
 Wenn neue Trades hinzugekommen sind: Wallet erneut pullen und im Browser neu laden. Die App haelt keine Trade-Daten zwischen den Requests vor.
+
+## Twitter-News auf dem Chart (Force Pull Twitter)
+
+Zusaetzlich zu den Wallet-Trades koennen Tweets eines @handles im Chart angezeigt werden - als klickbare Sprechblasen pro Kerzen-Bucket am unteren Chart-Rand (TradingView-News-Stil).
+
+### Voraussetzung
+
+```bash
+pip install playwright
+playwright install chromium
+```
+
+### Bedienung
+
+1. Im Dashboard oben den Block `Twitter Force Pull` ausfuellen:
+   * `@handle` (z.B. `Mark_Nr1`)
+   * `Von YYYY-MM-DD`
+   * `Bis YYYY-MM-DD`
+2. `Force Pull Twitter` klicken. Beim ersten Mal oeffnet sich Chrome -> bei `x.com` einloggen. Das Login wird in `analytics/data_lake/twitter/.x_profile/` gespeichert und bleibt erhalten.
+3. Der Scraper navigiert zu `x.com/<handle>` und scrollt, bis er einen Tweet aelter als das `Von`-Datum sieht oder die Timeline endet.
+4. Im Status-Feld neben dem Button siehst du Live-Fortschritt (`Sammle Tweets ... (47) - bei 2026-04-12`).
+5. Nach Fertigstellung erscheinen die Sprechblasen automatisch auf dem Chart.
+
+### CLI-Variante
+
+```bash
+python analytics/scripts/force_pull_twitter.py --handle Mark_Nr1 --from 2025-01-01 --to 2026-05-23
+```
+
+### Marker-Konvention
+
+| Marker             | Bedeutung                                                |
+| ------------------ | -------------------------------------------------------- |
+| `(speech) n` cyan  | `n` Tweets im jeweiligen Kerzen-Bucket                   |
+| `(speech)* n` amber| `n` Tweets ausserhalb des sichtbaren Zeitraums (Andock)  |
+
+Klick auf eine Sprechblase oeffnet rechts einen Drawer mit Tweet-Text, Bild(ern)/Video, Datum und Link zu X. Bei mehreren Tweets pro Bucket kannst du mit `<` und `>` durchblaettern.
+
+### History-Panel (oben rechts)
+
+Jeder Pull erzeugt eine Zeile mit:
+- Sichtbarkeits-Checkbox (Marker auf dem Chart ausblenden ohne zu loeschen)
+- Handle + Zeitraum + Tweet-Anzahl
+- Loesch-Button (`x`) - mit Bestaetigungsdialog, loescht den History-Eintrag UND die zugehoerige Parquet-Datei auf der Festplatte.
+
+### Datenablage
+
+- Pull-Parquet: `analytics/data_lake/twitter/<handle>__<from>__<to>.parquet`
+- History: `analytics/data_lake/twitter/history.json`
+- Live-Status (vom Scraper geschrieben, vom Dashboard gepollt): `analytics/data_lake/twitter/.pull_status.json`
+- Chrome-Profil (Login-Cookies): `analytics/data_lake/twitter/.x_profile/`
+
+Bilder/Videos werden **nicht** lokal gespeichert - der Drawer laedt sie direkt von Twitters CDN. Wenn Twitter Medien spaeter loescht, sind die URLs ungueltig (Tweet-Text bleibt erhalten).

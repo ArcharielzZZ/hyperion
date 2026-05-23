@@ -2,6 +2,8 @@
 
 Local-first crypto behavioral intelligence platform scaffold.
 
+> 📖 **Neu hier und kein Programmierer?** Falls du eine einfache, deutsche Schritt-für-Schritt-Anleitung suchst, um zu verstehen, was das Programm kann und wie du die einzelnen Werkzeuge (wie das visuelle Chart-Dashboard) startest, lies zuerst unsere [**START_ANLEITUNG.md**](START_ANLEITUNG.md)!
+
 This repository is intentionally structured as a quant research and trader-intelligence system, not a retail copytrading bot. Phase 1 establishes the local operating foundation: reliable ingestion, normalized storage, scoring, signal generation, paper execution, and an API surface that can later evolve into a distributed multi-service platform.
 
 ## Workspace Layout

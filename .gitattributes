@@ -1,0 +1,3 @@
+# Ensure SQL migration files always use LF line endings on checkout, 
+# preventing SQLx checksum mismatches on Windows.
+*.sql text eol=lf
