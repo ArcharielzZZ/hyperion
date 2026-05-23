@@ -298,19 +298,13 @@ pub fn build_discovery_ranks(
             if is_registry_whale && !filter_evaluated {
                 promoted = true;
             }
-            let rank_tier = if let Some(tier) = item.behavior_tier.as_ref().filter(|t| !t.is_empty()) {
-                tier.clone()
-            } else if is_registry_whale {
-                "whale".to_string()
-            } else if promoted && discovery_score >= 65.0 {
-                "active_tracked".to_string()
-            } else if discovery_score >= 75.0 {
-                "high_quality".to_string()
-            } else if discovery_score >= 50.0 {
-                "watchlist".to_string()
-            } else {
-                "watchlist".to_string()
-            };
+            let rank_tier = assign_rank_tier(
+                item.behavior_tier.as_deref(),
+                is_registry_whale,
+                promoted,
+                item.latest_behavior_score.unwrap_or(0.0),
+                discovery_score,
+            );
 
             TraderDiscoveryRank {
                 id: Uuid::new_v4(),
@@ -341,15 +335,141 @@ pub fn build_discovery_ranks(
 }
 
 fn classify_style(item: &WalletQuantMetrics) -> &'static str {
-    if item.avg_leverage >= 2.5 && item.fills_30d >= 50 && item.avg_holding_hours <= 8.0 {
-        "scalp"
-    } else if item.entry_timing_edge_bps > 10.0 && item.expectancy_bps > 0.0 {
-        "momentum"
-    } else if item.entry_timing_edge_bps < -5.0 && item.expectancy_bps > 0.0 {
-        "mean_reversion"
-    } else {
-        "swing"
+    const MIN_STYLE_FIT: f64 = 0.35;
+    const MIN_NON_SWING_MARGIN: f64 = 0.05;
+
+    let scores = style_fit_scores(item);
+    let [(best_style, best_score), _] = top_two_style_scores(scores);
+
+    if best_score < MIN_STYLE_FIT {
+        return "unknown";
     }
+
+    let margin = style_confidence(item);
+    if best_style != "swing" && margin < MIN_NON_SWING_MARGIN {
+        return "unknown";
+    }
+
+    best_style
+}
+
+fn style_fit_scores(item: &WalletQuantMetrics) -> [(&'static str, f64); 4] {
+    [
+        ("scalp", scalp_fit(item)),
+        ("momentum", momentum_fit(item)),
+        ("mean_reversion", mean_reversion_fit(item)),
+        ("swing", swing_fit(item)),
+    ]
+}
+
+fn top_two_style_scores(scores: [(&'static str, f64); 4]) -> [(&'static str, f64); 2] {
+    let mut ranked = scores;
+    ranked.sort_by(|left, right| right.1.partial_cmp(&left.1).unwrap_or(Ordering::Equal));
+    [ranked[0], ranked[1]]
+}
+
+fn style_confidence(item: &WalletQuantMetrics) -> f64 {
+    let scores = style_fit_scores(item);
+    let [(_, best_score), (_, runner_up_score)] = top_two_style_scores(scores);
+    (best_score - runner_up_score).clamp(0.0, 1.0)
+}
+
+fn scalp_fit(item: &WalletQuantMetrics) -> f64 {
+    let holding_fit = 1.0 - sigmoid_norm(item.avg_holding_hours, 4.0, 0.5);
+    let fills_fit = sigmoid_norm(item.fills_30d as f64, 50.0, 0.04);
+    let leverage_fit = bell_norm(item.avg_leverage, 5.0, 3.0);
+    let sizing_fit = 1.0 - sigmoid_norm(item.sizing_cv, 0.8, 3.0);
+
+    weighted_fit(&[
+        (holding_fit, 0.45),
+        (fills_fit, 0.30),
+        (leverage_fit, 0.15),
+        (sizing_fit, 0.10),
+    ])
+}
+
+fn momentum_fit(item: &WalletQuantMetrics) -> f64 {
+    if item.entry_timing_edge_bps <= 0.0 || item.expectancy_bps <= 0.0 {
+        return 0.0;
+    }
+
+    let edge_fit = sigmoid_norm(item.entry_timing_edge_bps, 10.0, 0.15);
+    let expectancy_fit = sigmoid_norm(item.expectancy_bps, 5.0, 0.2);
+    let favorable_fit = sigmoid_norm(item.favorable_entry_rate_pct, 55.0, 0.12);
+    let holding_fit = bell_norm(item.avg_holding_hours, 12.0, 20.0);
+
+    weighted_fit(&[
+        (edge_fit, 0.40),
+        (expectancy_fit, 0.30),
+        (favorable_fit, 0.20),
+        (holding_fit, 0.10),
+    ])
+}
+
+fn mean_reversion_fit(item: &WalletQuantMetrics) -> f64 {
+    if item.entry_timing_edge_bps >= 0.0 || item.expectancy_bps <= 0.0 {
+        return 0.0;
+    }
+
+    let edge_fit = sigmoid_norm(-item.entry_timing_edge_bps, 5.0, 0.15);
+    let expectancy_fit = sigmoid_norm(item.expectancy_bps, 3.0, 0.25);
+    let profit_factor_fit = sigmoid_norm(item.profit_factor - 1.0, 0.5, 1.5);
+    let recovery_fit = sigmoid_norm(item.recovery_factor, 1.0, 0.8);
+
+    weighted_fit(&[
+        (edge_fit, 0.40),
+        (expectancy_fit, 0.25),
+        (profit_factor_fit, 0.20),
+        (recovery_fit, 0.15),
+    ])
+}
+
+fn swing_fit(item: &WalletQuantMetrics) -> f64 {
+    let holding_fit = sigmoid_norm(item.avg_holding_hours, 24.0, 0.06);
+    let fills_fit = 1.0 - sigmoid_norm(item.fills_30d as f64, 20.0, 0.08);
+    let drawdown_fit = 1.0 - sigmoid_norm(item.max_drawdown_pct, 15.0, 0.1);
+    let leverage_fit = 1.0 - sigmoid_norm(item.leverage_volatility, 3.0, 0.4);
+
+    weighted_fit(&[
+        (holding_fit, 0.45),
+        (fills_fit, 0.25),
+        (drawdown_fit, 0.20),
+        (leverage_fit, 0.10),
+    ])
+}
+
+fn assign_rank_tier(
+    behavior_tier: Option<&str>,
+    is_registry_whale: bool,
+    promoted: bool,
+    behavior_score: f64,
+    discovery_score: f64,
+) -> String {
+    if let Some(tier) = behavior_tier.filter(|tier| !tier.is_empty()) {
+        return tier.to_string();
+    }
+
+    if is_registry_whale {
+        return "whale".to_string();
+    }
+
+    if promoted && behavior_score >= 80.0 && discovery_score >= 70.0 {
+        return "elite".to_string();
+    }
+
+    if promoted && discovery_score >= 60.0 {
+        return "active_tracked".to_string();
+    }
+
+    if discovery_score >= 72.0 {
+        return "high_quality".to_string();
+    }
+
+    if discovery_score >= 45.0 {
+        return "watchlist".to_string();
+    }
+
+    "monitored".to_string()
 }
 
 fn distinct_active_days(
@@ -579,6 +699,25 @@ fn weighted_average(values: &[(f64, f64)]) -> f64 {
     }
 }
 
+fn weighted_fit(values: &[(f64, f64)]) -> f64 {
+    weighted_average(values).clamp(0.0, 1.0)
+}
+
+fn sigmoid_norm(value: f64, midpoint: f64, steepness: f64) -> f64 {
+    let value = sanitize(value);
+    let midpoint = sanitize(midpoint);
+    let steepness = sanitize(steepness);
+    (1.0 / (1.0 + (-steepness * (value - midpoint)).exp())).clamp(0.0, 1.0)
+}
+
+fn bell_norm(value: f64, center: f64, width: f64) -> f64 {
+    if width <= EPSILON {
+        return 0.0;
+    }
+    let delta = (sanitize(value) - sanitize(center)) / width;
+    (-0.5 * delta * delta).exp().clamp(0.0, 1.0)
+}
+
 fn percentile_map<T>(
     items: &[T],
     value_fn: impl Fn(&T) -> f64,
@@ -667,6 +806,33 @@ impl TraderScoped for TraderDiscoveryAggregate {
 mod tests {
     use super::*;
 
+    fn base_metrics() -> WalletQuantMetrics {
+        WalletQuantMetrics {
+            trader_id: Uuid::new_v4(),
+            active_days_30d: 20,
+            fills_30d: 12,
+            positions_30d: 8,
+            daily_return_count: 20,
+            leverage_count: 20,
+            entry_edge_count: 20,
+            sharpe_like: 1.0,
+            return_vol_bps: 100.0,
+            downside_vol_bps: 60.0,
+            hit_rate_pct: 55.0,
+            max_drawdown_pct: 10.0,
+            recovery_factor: 2.0,
+            entry_timing_edge_bps: 0.0,
+            favorable_entry_rate_pct: 50.0,
+            avg_leverage: 3.0,
+            max_leverage: 10.0,
+            leverage_volatility: 1.5,
+            sizing_cv: 0.4,
+            expectancy_bps: 5.0,
+            profit_factor: 1.5,
+            avg_holding_hours: 48.0,
+        }
+    }
+
     #[test]
     fn percentile_map_preserves_order() {
         #[derive(Clone)]
@@ -707,5 +873,115 @@ mod tests {
         assert_eq!(shrink_to_neutral(80.0, 1.0), 80.0);
         assert_eq!(shrink_to_neutral(80.0, 0.0), 50.0);
         assert_eq!(shrink_to_neutral(20.0, 0.0), 50.0);
+    }
+
+    #[test]
+    fn classify_style_handles_scalp_threshold_edges() {
+        let mut metrics = base_metrics();
+        metrics.fills_30d = 150;
+        metrics.avg_leverage = 2.49;
+        metrics.avg_holding_hours = 1.0;
+
+        assert_eq!(classify_style(&metrics), "scalp");
+    }
+
+    #[test]
+    fn classify_style_detects_momentum_with_positive_continuation() {
+        let mut metrics = base_metrics();
+        metrics.entry_timing_edge_bps = 20.0;
+        metrics.favorable_entry_rate_pct = 65.0;
+        metrics.expectancy_bps = 12.0;
+        metrics.avg_holding_hours = 8.0;
+        metrics.fills_30d = 15;
+
+        assert_eq!(classify_style(&metrics), "momentum");
+    }
+
+    #[test]
+    fn classify_style_requires_positive_expectancy_for_momentum() {
+        let mut metrics = base_metrics();
+        metrics.entry_timing_edge_bps = 20.0;
+        metrics.expectancy_bps = -5.0;
+        metrics.avg_holding_hours = 30.0;
+
+        assert_ne!(classify_style(&metrics), "momentum");
+    }
+
+    #[test]
+    fn classify_style_detects_mean_reversion_with_negative_entry_edge() {
+        let mut metrics = base_metrics();
+        metrics.entry_timing_edge_bps = -18.0;
+        metrics.expectancy_bps = 8.0;
+        metrics.profit_factor = 2.2;
+        metrics.recovery_factor = 3.0;
+        metrics.avg_holding_hours = 36.0;
+
+        assert_eq!(classify_style(&metrics), "mean_reversion");
+    }
+
+    #[test]
+    fn classify_style_returns_unknown_when_margin_is_thin() {
+        let mut metrics = base_metrics();
+        metrics.fills_30d = 35;
+        metrics.avg_holding_hours = 18.0;
+        metrics.entry_timing_edge_bps = 6.0;
+        metrics.favorable_entry_rate_pct = 55.0;
+        metrics.expectancy_bps = 4.0;
+
+        assert_eq!(classify_style(&metrics), "unknown");
+    }
+
+    #[test]
+    fn classify_style_detects_clear_swing_instead_of_unknown() {
+        let mut metrics = base_metrics();
+        metrics.avg_holding_hours = 96.0;
+        metrics.fills_30d = 8;
+        metrics.max_drawdown_pct = 8.0;
+        metrics.leverage_volatility = 0.5;
+        metrics.entry_timing_edge_bps = 2.0;
+        metrics.expectancy_bps = 3.0;
+
+        assert_eq!(classify_style(&metrics), "swing");
+    }
+
+    #[test]
+    fn assign_rank_tier_distinguishes_low_discovery_from_watchlist() {
+        assert_eq!(
+            assign_rank_tier(None, false, false, 30.0, 20.0),
+            "monitored"
+        );
+    }
+
+    #[test]
+    fn assign_rank_tier_keeps_manual_tier_first() {
+        assert_eq!(
+            assign_rank_tier(Some("custom_vip"), true, true, 0.0, 0.0),
+            "custom_vip"
+        );
+    }
+
+    #[test]
+    fn assign_rank_tier_promotes_best_tracked_wallets_to_elite() {
+        assert_eq!(assign_rank_tier(None, false, true, 85.0, 75.0), "elite");
+    }
+
+    #[test]
+    fn assign_rank_tier_keeps_high_quality_reachable_without_promotion() {
+        assert_eq!(
+            assign_rank_tier(None, false, false, 70.0, 73.0),
+            "high_quality"
+        );
+    }
+
+    #[test]
+    fn sigmoid_norm_returns_half_at_midpoint() {
+        let result = sigmoid_norm(10.0, 10.0, 1.0);
+        assert!((result - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn bell_norm_returns_one_at_center() {
+        let result = bell_norm(5.0, 5.0, 2.0);
+        assert!((result - 1.0).abs() < 1e-6);
     }
 }
