@@ -1,0 +1,44 @@
+---
+description: Guidelines for generating Polars data analysis and Plotly charts for the Hyperion quant platform.
+globs: ["analytics/research/**/*.py", "*.ipynb"]
+---
+
+# Hyperion Research & Charting Guidelines
+
+When the user asks to visualize data, analyze a wallet, or create a chart, follow these strict guidelines to ensure high-performance, look-ahead-bias-free quantitative research.
+
+## 1. Core Stack
+- **Data Manipulation:** `polars` (NEVER use `pandas`).
+- **Visualization:** `plotly.graph_objects` (for complex subplots) or `plotly.express` (for simple charts).
+- **Execution:** Scripts should be standalone Python files in `analytics/research/` or Jupyter Notebooks.
+
+## 2. Data Loading & Joining (The Polars Way)
+- Assume data is stored in Parquet files or PostgreSQL. If no specific source is provided, generate a small dummy DataFrame using `pl.DataFrame(...)` to demonstrate the logic.
+- **CRITICAL: Time-Series Joins:** When joining trades with asynchronous data (like funding rates, prices, or macro events), you MUST use `join_asof`.
+- **Prevent Look-Ahead Bias:** Always sort DataFrames by the time column before joining. Always use `strategy="backward"` in `join_asof` to ensure a trade only sees the data that was available *before or at the exact moment* of the trade.
+
+```python
+# Example of correct AS OF join
+trades = trades.sort("timestamp")
+funding = funding.sort("timestamp")
+
+enriched = trades.join_asof(
+    funding,
+    on="timestamp",
+    by="asset",
+    strategy="backward"
+)
+```
+
+## 3. Visualization Standards (Plotly)
+- **Theme:** Always use `template="plotly_dark"` for a professional crypto/quant aesthetic.
+- **Subplots:** Use `make_subplots(shared_xaxes=True)` when comparing price/trades with indicators (like funding rate or PnL) so the user can zoom synchronously.
+- **Trade Markers:** 
+  - Long trades: `marker=dict(symbol='triangle-up', color='green')`
+  - Short trades: `marker=dict(symbol='triangle-down', color='red')`
+- **Hover Data:** Use `hovertemplate` to make tooltips clean and informative (e.g., showing exact price, time, and size).
+
+## 4. Output Expectation
+- Do not explain basic Python concepts unless asked.
+- Provide the complete, runnable Python script.
+- Ensure the script ends with `fig.show()` so the interactive chart opens automatically in the user's browser.

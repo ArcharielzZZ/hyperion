@@ -13,8 +13,8 @@
 
 # --- Python (pipeline) ---
 python/.venv/
-python/**/__pycache__/
-python/**/*.py[cod]
+**/__pycache__/
+**/*.py[cod]
 python/.pytest_cache/
 python/.mypy_cache/
 python/.ruff_cache/
