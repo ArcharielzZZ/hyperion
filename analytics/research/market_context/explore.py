@@ -8,6 +8,10 @@ from datetime import datetime
 # ==========================================
 # HYPERION: ZEC Wallet Trade Visualizer
 # ==========================================
+# DEPRECATED for daily use: use Wallet Explorer dashboard instead
+# (analytics/dashboard/wallet_explorer.py) after force_pull_wallet_bundle.py.
+# This script remains as a reference for one-off research plots.
+#
 # Fetches live data from Hyperliquid and renders an interactive chart:
 #   - ZEC candlestick (4h) with buy/sell triangle markers
 #   - Triangle size scales with fill size vs. mean size

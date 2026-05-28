@@ -33,6 +33,12 @@ shared-data/*
 data/
 **/*.parquet
 
+# --- Wallet Explorer local pulls (parquet/json; not team-shared) ---
+analytics/data_lake/**/*
+!analytics/data_lake/**/
+!analytics/data_lake/**/.gitkeep
+!analytics/data_lake/**/README.md
+
 # --- PostgreSQL dumps (schema migrations under infra/migrations/ stay tracked) ---
 *.dump
 *.sql.gz

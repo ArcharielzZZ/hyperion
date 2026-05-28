@@ -101,11 +101,13 @@ Hier siehst du die echten Ergebnisse und kannst das System bedienen!
 ### 📊 Die interaktive Chart-Oberfläche (Wallet Explorer)
 Dies ist deine visuelle Benutzeroberfläche. Du kannst eine Wallet-Adresse eingeben, einen Coin auswählen und siehst sofort alle Trades dieses Händlers direkt auf dem Kerzenchart!
 
-1. **Daten für eine Wallet herunterladen**:
-   Bevor du ein Wallet im Chart anschauen kannst, musst du dessen historische Trades von der Börse herunterladen. Ersetze `0x...` im folgenden Befehl mit einer echten Wallet-Adresse (z.B. `0x3895d155b005191686476a39580d43258a518e46`) und führe ihn aus:
+1. **Daten für eine Wallet herunterladen** (volle Historie):
+   * **Im Dashboard:** Wallet-Adresse eingeben → **Wallet Force Pull** klicken → warten bis „Fertig“ → **Wallet laden**.
+   * **Oder im Terminal** (ersetze `0x...` durch eine echte Adresse):
    ```bash
-   python analytics/scripts/force_pull_wallet.py 0x3895d155b005191686476a39580d43258a518e46
+   python analytics/scripts/force_pull_wallet_bundle.py 0x3895d155b005191686476a39580d43258a518e46
    ```
+   Das lädt Trades, Limit-Orders, Funding, Ledger und Kerzen für alle getradeten Coins.
 2. **Das Dashboard starten**:
    Führe diesen Befehl aus:
    ```bash
@@ -115,7 +117,7 @@ Dies ist deine visuelle Benutzeroberfläche. Du kannst eine Wallet-Adresse einge
    Sobald im Terminal steht, dass der Server läuft, öffne deinen Webbrowser (Chrome, Firefox, etc.) und gehe auf folgende Adresse:
    👉 **[http://127.0.0.1:8050](http://127.0.0.1:8050)**
 
-Hier kannst du jetzt oben das Wallet eingeben, den Coin wählen und durch die Zeitintervalle (z.B. 15 Minuten, 1 Stunde, 1 Tag) klicken!
+Hier kannst du jetzt oben das Wallet eingeben, **Wallet Force Pull** oder **Wallet laden** nutzen, den Coin wählen und durch die Zeitintervalle klicken! Pro Coin siehst du Trades, Limit-Orders, Funding-Rate, Ledger-Ein-/Auszahlungen (Icons oben) und optional Twitter-News.
 
 ---
 
@@ -161,14 +163,9 @@ make discover-whales
 
 ---
 
-### 📈 Markt-Kontext analysieren (Alternative Chart-Ansicht)
-Möchtest du sehen, wie die Trades eines Wallets im Verhältnis zur Funding Rate (Gebühren für Positionen) und den Marktbewegungen stehen?
+### 📈 Markt-Kontext (ehemals explore.py)
 
-Führe diesen Befehl aus:
-```bash
-python analytics/research/market_context/explore.py
-```
-Das Skript lädt Daten und öffnet automatisch einen interaktiven Plotly-Chart in deinem Browser!
+Funding Rate, Kerzen und Trades zusammen siehst du jetzt **direkt im Wallet Explorer** (Coin wählen nach Wallet-Pull). Das alte Forschungs-Skript `analytics/research/market_context/explore.py` ist nur noch Referenz und muss nicht mehr separat gestartet werden.
 
 ---
 
@@ -189,4 +186,4 @@ Das Skript lädt Daten und öffnet automatisch einen interaktiven Plotly-Chart i
   ```
 
 ### ❓ Muss ich Programmierer sein, um das zu verstehen?
-* **Nein!** Nutze einfach den **Wallet Explorer** (Punkt 5). Lade dir mit `force_pull_wallet.py` ein interessantes Wallet herunter, starte das Dashboard und analysiere die Trades ganz entspannt im Browser.
+* **Nein!** Nutze einfach den **Wallet Explorer** (Punkt 5): **Wallet Force Pull**, dann Coin wählen und im Browser analysieren.

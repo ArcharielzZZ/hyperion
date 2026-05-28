@@ -39,6 +39,10 @@ from playwright.sync_api import (
 # --------------------------------------------------------------------------- #
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
+
+from analytics.lib.parquet_io import atomic_write_parquet  # noqa: E402
+
 TWITTER_DIR = REPO_ROOT / "analytics" / "data_lake" / "twitter"
 PROFILE_DIR = TWITTER_DIR / ".x_profile"
 HISTORY_PATH = TWITTER_DIR / "history.json"
@@ -405,7 +409,7 @@ def save_pull(
             "media_urls": [t["media_urls"] for t in in_range],
         }).with_columns(pl.col("created_at").cast(pl.Datetime("ms", time_zone="UTC")))
 
-    df.write_parquet(out_path, compression="zstd")
+    atomic_write_parquet(df, out_path, compression="zstd")
     return out_path, len(in_range)
 
 

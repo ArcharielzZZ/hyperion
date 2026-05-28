@@ -167,6 +167,7 @@ pub fn normalize_message(
             }
         }
         IngestMessage::UserFills(message) => {
+            let wallet = normalize_wallet(&message.user);
             for fill in &message.fills {
                 let timestamp = timestamp_from_millis(fill.time, "userFills")?;
                 let price = parse_f64("userFills.px", &fill.px, "userFills")?;
@@ -176,7 +177,7 @@ pub fn normalize_message(
                 let fee = parse_f64("userFills.fee", &fill.fee, "userFills").ok();
 
                 batch.fills.push(FillRecord {
-                    wallet: message.user.clone(),
+                    wallet: wallet.clone(),
                     coin: fill.coin.clone(),
                     side: fill.side.as_normalized().to_string(),
                     size,
@@ -185,7 +186,7 @@ pub fn normalize_message(
                     timestamp,
                     event_key: format!(
                         "fill|{}|{}|{}|{}|{}",
-                        message.user, fill.coin, fill.hash, fill.tid, fill.oid
+                        wallet, fill.coin, fill.hash, fill.tid, fill.oid
                     ),
                     fill_dir: Some(fill.dir.clone()),
                     closed_pnl_usd: closed_pnl,
@@ -332,6 +333,10 @@ fn parse_user_data<T: serde::de::DeserializeOwned>(
     parse_data(channel, data)
 }
 
+fn normalize_wallet(wallet: &str) -> String {
+    wallet.to_ascii_lowercase()
+}
+
 fn parse_f64(field: &str, raw: &str, channel: &str) -> Result<f64, ValidationError> {
     raw.parse::<f64>().map_err(|error| {
         ValidationError::new(
@@ -423,6 +428,29 @@ mod tests {
             batch.fills[0].wallet,
             "0x31ca8395cf837de08b24da3f660e77761dfb974b"
         );
+        assert!(batch.fills[0]
+            .event_key
+            .starts_with("fill|0x31ca8395cf837de08b24da3f660e77761dfb974b|"));
+    }
+
+    #[test]
+    fn normalizes_mixed_case_wallet_in_fill_event_key() {
+        let raw = fixture("user_fills_snapshot.json");
+        let mut envelope: serde_json::Value =
+            serde_json::from_str(&raw).expect("fixture should parse as JSON");
+        envelope["data"]["user"] = serde_json::Value::String(
+            "0xABCDEF1234567890ABCDEF1234567890ABCDEF12".to_string(),
+        );
+        let message = parse_message(&serde_json::to_string(&envelope).expect("serialize envelope"))
+            .expect("user fills should parse");
+        let batch = normalize_message(&message, Utc::now()).expect("user fills should normalize");
+        assert_eq!(
+            batch.fills[0].wallet,
+            "0xabcdef1234567890abcdef1234567890abcdef12"
+        );
+        assert!(batch.fills[0].event_key.contains(
+            "fill|0xabcdef1234567890abcdef1234567890abcdef12|"
+        ));
     }
 
     #[test]

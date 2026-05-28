@@ -26,14 +26,29 @@ pip install "dash>=2.17" "plotly>=5.22" "requests>=2.32"
 
 Polars ist bereits Teil von `hyperion-pipeline` (siehe [python/pyproject.toml](../../python/pyproject.toml)).
 
-## Wallet pullen (einmalig pro Wallet)
+## Wallet pullen (volle Historie, einmalig pro Wallet)
+
+**Im Dashboard (empfohlen):** Wallet-Adresse eingeben, **Wallet Force Pull** klicken, warten bis „Fertig“, dann **Wallet laden**.
+
+**CLI (Alternative):**
 
 ```powershell
-python analytics/scripts/force_pull_wallet.py 0x2d99fe0f36c1aebd28a1a2c0e82e8ca13c2ea351
+python analytics/scripts/force_pull_wallet_bundle.py 0x2d99fe0f36c1aebd28a1a2c0e82e8ca13c2ea351
 ```
 
-Das Skript schreibt die komplette Trade-Historie nach
-`analytics/data_lake/wallets/<wallet>.parquet`. Die App liest ausschliesslich von dort.
+Der Pull speichert ein **Bundle** unter `analytics/data_lake/wallets/<wallet>/`:
+
+| Datei | Inhalt |
+| ----- | ------ |
+| `fills.parquet` | Alle Trades (volle Historie) |
+| `orders.parquet` | Limit-Order-Historie (~2000 letzte) |
+| `user_funding.parquet` | Funding-Zahlungen der Wallet |
+| `ledger.parquet` | Ein-/Auszahlungen, Transfers |
+| `market/<COIN>_candles_4h.parquet` | Kerzen pro getradetem Coin |
+| `market/<COIN>_funding.parquet` | Markt-Funding-Rate pro Coin |
+| `meta.json` | Metadaten (Coins, Pull-Zeitpunkt) |
+
+Legacy: flache Datei `wallets/<wallet>.parquet` (nur Fills) wird weiter unterstuetzt.
 
 ## Dashboard starten
 
@@ -45,16 +60,71 @@ Browser oeffnen: <http://127.0.0.1:8050>
 
 ## Bedienung
 
-1. Wallet-Adresse (0x...) in das Textfeld eintragen, `Wallet laden` klicken oder Enter druecken.
-2. Status zeigt "OK - N Fills, M Coins" - Coin-Dropdown ist jetzt befuellt.
-3. Coin auswaehlen. Default-Intervall ist `4h`.
-4. Intervalle durchschalten: `15m`, `30m`, `1h`, `4h`, `1d`, `1w`, `1M`. Marker werden automatisch neu pro Kerze aggregiert.
+1. Wallet-Adresse (0x...) eintragen.
+2. **Wallet Force Pull** (volle Historie) oder vorher per CLI pullen.
+3. **Wallet laden** — Status zeigt Fills + Coins; darunter erscheint das **Research-Score-Panel**.
+4. Coin waehlen (Default-Intervall `4h`).
+5. Intervalle durchschalten: `15m` … `1M` (Kerzen-Cache nur fuer `4h` aus Bundle; andere Intervalle per Live-API in Zeitfenstern).
+
+## Research Score (Bundle, Full History)
+
+Nach **Wallet laden** berechnet das Dashboard offline einen **Research-Score** aus `fills.parquet` — ohne Postgres, ohne Live-Ingest, ohne API `:8080`.
+
+| Anzeige | Quelle / Logik |
+| ------- | -------------- |
+| **Style** (Scalp, Swing, Momentum, …) | Port aus `services/trader-engine/src/scoring.rs` (`classify_style`) |
+| **5 Sub-Scores + Total** | Gleiche Gewichtung wie Production (30/25/15/15/15), aber **Absolut-Scoring** pro Wallet (kein Kohorten-Ranking) |
+| **Zeitraum** | Volle gepullte History (alle Fills im Bundle) |
+| **PnL-Proxy** | Taegliche `closed_pnl`-Summe → Equity-Kurve |
+| **Leverage-Score** | Neutral (50), da Bundle keine Leverage-Daten enthaelt |
+
+Implementierung: [`analytics/lib/wallet_scoring.py`](../lib/wallet_scoring.py), UI: [`wallet_score_panel.py`](wallet_score_panel.py).
+
+**Abweichung zu Live-Score:** Production nutzt Postgres (`pnl_snapshots`, `positions`) und ein 30-Tage-Fenster. Das Panel ist eine **Offline-Vorschau** zum Ausprobieren der Darstellung — kein Ersatz fuer den trader-engine-Score.
+
+**Limit-Orders:** Horizontale Linien auf `limit_px` von Platzierung bis Fill/Cancel (offene Orders bis Chart-Ende). Kerzen-Marker nur bei Platzierung:
+
+| Linie / Marker | Bedeutung |
+| -------------- | --------- |
+| Gruen durchgezogen + `X n` | Long Open |
+| Rot durchgezogen + `X n` | Long Close |
+| Gruen gepunktet + `Y n` gruen | Short Open |
+| Rot gepunktet + `Y n` rot | Short Close |
+| **`X n` gelb** (+ gelbe Linie Platz → Cancel) | Limit Long Cancel |
+| **`Y n` gelb** (+ gelbe gepunktete Linie) | Limit Short Cancel |
+
+Linien-Opacity ca. 40 %. Klassifikation: `reduce_only` + Side A/B, sonst Side B = Long Open, Side A = Short Open; Cancel-Status = gelb.
+
+**Wichtig:** `historicalOrders` liefert pro Order oft zwei Snapshots (`open` + `filled`/`canceled`) — im Code wird pro `oid` dedupliziert (Terminal-Status gewinnt). Linie: Platzierung (`timestamp`) bis Fill/Cancel (`status_timestamp`); nur echte `open`-Orders laufen bis Chart-Ende.
+
+**Limit Long Close ohne Limit Long Open:** `reduceOnly`-Limit-Sells (Side A) schliessen bestehende Longs — oft per **Market Open Long** (L-Marker). Das ist korrekt, kein fehlender Limit-Open.
+
+## Chart bedienen (TradingView-aehnlich)
+
+- **Ziehen** im Chart: verschieben (Pan)
+- **Mausrad**: zoomen
+- **Linke Y-Achse** (Preis / Volumen / Funding): Enden ziehen = nur diese Achse skalieren
+- **Zeit-Leiste unten** (Rangeslider): horizontal scrollen / Zeitfenster waehlen
+- **Doppelklick**: Zoom zuruecksetzen
+- Toolbar oben rechts: Pan, Zoom-Rechteck, Autoscale, Reset
+
+## Chart-Inhalte (pro Coin)
+
+| Element | Quelle |
+| ------- | ------ |
+| Kerzen + Markt-Volumen | Bundle (`4h`) oder Live `candleSnapshot` |
+| Fill-Marker (L/S) | `fills.parquet` |
+| Limit-Order-Linien + X/Y-Platzierungsmarker | `orders.parquet` (`limit_px`, `timestamp`, `status_timestamp`, `reduce_only`) |
+| Ledger-Icons oben am Chart | `ledger.parquet` (Deposit/Withdraw/Transfer) |
+| Markt-Funding-Rate (unteres Panel) | `market/<COIN>_funding.parquet` oder Live |
+| Wallet-Funding-Summe | Titelzeile: Summe `user_funding` im **sichtbaren Kerzen-Zeitraum** (negativ = gezahlt) |
+| Twitter-Sprechblasen | unten am Chart (separater Pull) |
 
 ## Datenquellen
 
-- **Wallet-Trades:** lokal aus Parquet (`analytics/data_lake/wallets/`).
-- **Kerzen:** live vom Hyperliquid REST-Endpunkt `candleSnapshot` (paginiert, max 5000 Kerzen pro Call).
-- **Sichtbarer Bereich:** automatisch erste bis letzte Wallet-Aktivitaet auf dem Coin + 7 Tage Padding.
+- **Wallet-Daten:** Bundle oder Legacy-Parquet unter `analytics/data_lake/wallets/`.
+- **Sichtbarer Bereich:** erste bis letzte Wallet-Aktivitaet auf dem Coin + 7 Tage Padding.
+- **Kein** historisches Orderbuch (API-Limit).
 
 ## Frische Daten
 
