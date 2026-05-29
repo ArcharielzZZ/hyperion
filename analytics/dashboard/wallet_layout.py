@@ -85,6 +85,7 @@ SPOT_PLACEMENT_MARKER_STYLES: dict[str, dict] = {
 
 FORCE_PULL_TWITTER_SCRIPT = REPO_ROOT / "analytics" / "scripts" / "force_pull_twitter.py"
 FORCE_PULL_WALLET_SCRIPT = REPO_ROOT / "analytics" / "scripts" / "force_pull_wallet_bundle.py"
+FORCE_PULL_ORDERBOOK_SCRIPT = REPO_ROOT / "analytics" / "scripts" / "force_pull_orderbook.py"
 
 CHART_GRAPH_CONFIG = {
     "scrollZoom": True,
@@ -222,6 +223,35 @@ def build_layout(initial_figure):
                 "borderRadius": "6px", "backgroundColor": "#0c0c20",
             },
             children=[
+                html.Span("S3 Order Book:", style={"fontWeight": 600, "color": "#90caf9"}),
+                html.Button(
+                    "Order Book Pull",
+                    id="orderbook-pull-btn", n_clicks=0,
+                    style={
+                        "padding": "8px 16px",
+                        "backgroundColor": "#1a2a3a", "color": "#90caf9",
+                        "border": "1px solid #90caf9", "borderRadius": "4px",
+                        "cursor": "pointer", "fontWeight": 600,
+                    },
+                ),
+                html.Div(id="orderbook-pull-status", style={"fontSize": "12px"}),
+                html.Div(id="s3-quota-line", style={"fontSize": "11px", "marginLeft": "auto"}),
+            ],
+        ),
+        html.Div(
+            "Order Book Pull: laedt nur S3-Stunden mit Trades fuer den gewaehlten Coin "
+            "(1 Snapshot pro Fill). Monats-Limit 100 GB — nur manuell starten.",
+            style={"fontSize": "11px", "opacity": 0.55, "marginBottom": "12px"},
+        ),
+
+        html.Div(
+            style={
+                "display": "flex", "gap": "10px", "alignItems": "center",
+                "flexWrap": "wrap", "marginBottom": "8px",
+                "padding": "10px", "border": f"1px solid {GRID}",
+                "borderRadius": "6px", "backgroundColor": "#0c0c20",
+            },
+            children=[
                 html.Span("Twitter Force Pull:", style={"fontWeight": 600, "color": TWEET_CYAN}),
                 dcc.Input(
                     id="tw-handle",
@@ -288,7 +318,7 @@ def build_layout(initial_figure):
             color=BUY_GREEN,
             children=dcc.Graph(
                 id="chart",
-                style={"height": "990px"},
+                style={"height": "1090px"},
                 config=CHART_GRAPH_CONFIG,
                 figure=initial_figure,
             ),
@@ -404,5 +434,6 @@ def build_layout(initial_figure):
         dcc.Store(id="tw-pending-delete"),
         dcc.Interval(id="tw-status-interval", interval=1000, disabled=True),
         dcc.Interval(id="wallet-status-interval", interval=1000, disabled=True),
+        dcc.Interval(id="orderbook-status-interval", interval=1000, disabled=True),
     ],
 )

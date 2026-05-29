@@ -25,6 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from callbacks_orderbook import register_orderbook_callbacks  # noqa: E402
 from callbacks_twitter import register_twitter_callbacks  # noqa: E402
 from callbacks_wallet import register_wallet_callbacks  # noqa: E402
 from wallet_chart import _empty_figure  # noqa: E402
@@ -35,6 +36,7 @@ app.layout = build_layout(_empty_figure("Bitte eine Wallet laden."))
 
 register_wallet_callbacks(app)
 register_twitter_callbacks(app)
+register_orderbook_callbacks(app)
 
 
 if __name__ == "__main__":

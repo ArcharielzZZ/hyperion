@@ -68,3 +68,21 @@ PREPARED_LIMIT_ORDERS_SCHEMA: dict[str, pl.DataType] = {
     "order_kind": pl.String,
     "ambiguous": pl.Boolean,
 }
+
+ORDERBOOK_SNAPSHOT_SCHEMA: dict[str, pl.DataType] = {
+    "fill_timestamp": pl.Datetime("ms"),
+    "fill_hash": pl.String,
+    "coin": pl.String,
+    "snapshot_timestamp": pl.Datetime("ms"),
+    "best_bid_px": pl.Float64,
+    "best_bid_sz": pl.Float64,
+    "best_ask_px": pl.Float64,
+    "best_ask_sz": pl.Float64,
+    "spread": pl.Float64,
+    "spread_bps": pl.Float64,
+    "mid_px": pl.Float64,
+    "bid_depth_top5": pl.Float64,
+    "ask_depth_top5": pl.Float64,
+    "bid_levels_json": pl.String,
+    "ask_levels_json": pl.String,
+}

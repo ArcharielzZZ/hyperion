@@ -10,6 +10,7 @@ import polars as pl
 from dash import Input, Output, State, ctx, html, no_update
 
 import twitter_pulls
+import orderbook_pulls
 import wallet_pulls
 from analytics.lib import hl_fetch
 from analytics.lib.spot_meta import format_coin_chart_title, format_coin_option_label
@@ -363,6 +364,14 @@ def register_wallet_callbacks(app) -> None:
 
             buckets = aggregate_trades(df, coin, interval)
             buckets_joined = join_buckets_with_candles(buckets, candles_df)
+
+            orderbook_df = orderbook_pulls.load_orderbook_snapshots(wallet, coin)
+            from analytics.lib.liquidity_baseline import ensure_baseline
+
+            baseline = ensure_baseline()
+            buckets_joined = orderbook_pulls.join_orderbook_to_buckets(
+                buckets_joined, df, orderbook_df, coin, interval, baseline=baseline
+            )
 
             tweets_df = twitter_pulls.load_visible_tweets()
 

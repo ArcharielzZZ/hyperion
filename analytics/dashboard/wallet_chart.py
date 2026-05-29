@@ -9,7 +9,9 @@ import plotly.graph_objects as go
 import polars as pl
 from plotly.subplots import make_subplots
 
+import orderbook_pulls
 import twitter_pulls
+from orderbook_pulls import format_levels_hover_html, format_orderbook_hover_row
 from analytics.lib import hl_fetch
 from analytics.lib.schemas import PREPARED_LIMIT_ORDERS_SCHEMA
 from analytics.lib.spot_meta import is_spot_coin
@@ -388,7 +390,7 @@ def _configure_chart_interaction(
         hovermode="x unified",
         xaxis_rangeslider_visible=False,
     )
-    for row in (1, 2, 3):
+    for row in (1, 2, 3, 4):
         fig.update_xaxes(
             fixedrange=False,
             showgrid=True,
@@ -407,7 +409,7 @@ def _configure_chart_interaction(
             thickness=0.07,
             bordercolor=GRID,
         ),
-        row=3,
+        row=4,
         col=1,
     )
     fig.update_yaxes(
@@ -439,6 +441,16 @@ def _configure_chart_interaction(
         row=3,
         col=1,
     )
+    fig.update_yaxes(
+        fixedrange=False,
+        autorange=True,
+        gridcolor=GRID,
+        tickformat=".4f",
+        title_text="Z-Spread (σ)",
+        side="left",
+        row=4,
+        col=1,
+    )
 
 
 def build_figure(
@@ -467,15 +479,16 @@ def build_figure(
         )
 
     fig = make_subplots(
-        rows=3,
+        rows=4,
         cols=1,
-        row_heights=[0.62, 0.15, 0.23],
+        row_heights=[0.52, 0.12, 0.18, 0.18],
         shared_xaxes=True,
-        vertical_spacing=0.03,
+        vertical_spacing=0.025,
         subplot_titles=(
             f"<b>{chart_coin} / USD</b>  -  {interval}  -  Wallet {wallet[:10]}...{wallet[-6:]}{uf_note}{candle_note}",
             "Volumen",
             "Markt Funding Rate",
+            "Z-Spread @ Trade (S3 L2)",
         ),
     )
 
@@ -569,8 +582,13 @@ def build_figure(
     if funding_df is not None and not funding_df.is_empty():
         _add_funding_panel(fig, funding_df)
 
+    if not buckets_joined.is_empty() and (
+        "ob_z_spread_mean" in buckets_joined.columns or "ob_spread_mean" in buckets_joined.columns
+    ):
+        _add_orderbook_spread_panel(fig, buckets_joined)
+
     fig.update_layout(
-        height=980,
+        height=1080,
         template="plotly_dark",
         paper_bgcolor=BG_PAPER,
         plot_bgcolor=BG_PLOT,
@@ -633,6 +651,69 @@ def _add_ledger_markers(
         row=1,
         col=1,
     )
+
+
+def _z_spread_color(z: float | None) -> str:
+    if z is None:
+        return "#90caf9"
+    if z <= -0.5:
+        return "#66bb6a"
+    if z >= 1.5:
+        return "#ef5350"
+    return "#90caf9"
+
+
+def _add_orderbook_spread_panel(fig: go.Figure, buckets_joined: pl.DataFrame) -> None:
+    """Dedicated z-spread panel — normalized liquidity vs coin/hour baseline."""
+    use_z = "ob_z_spread_mean" in buckets_joined.columns
+    if use_z:
+        flt = buckets_joined.filter(pl.col("ob_z_spread_mean").is_not_null())
+        if flt.is_empty():
+            flt = buckets_joined.filter(pl.col("ob_spread_mean").is_not_null())
+            use_z = False
+    else:
+        flt = buckets_joined.filter(pl.col("ob_spread_mean").is_not_null())
+
+    if flt.is_empty():
+        return
+
+    xs = flt["timestamp"].to_list()
+    if use_z:
+        ys = flt["ob_z_spread_mean"].to_list()
+        y_label = "Z-Spread (σ)"
+    else:
+        ys = flt["ob_spread_mean"].to_list()
+        y_label = "Spread (USD, Baseline fehlt)"
+    colors = [_z_spread_color(z if use_z else None) for z in (ys if use_z else [None] * len(ys))]
+    hovers = [format_orderbook_hover_row(row) for row in flt.iter_rows(named=True)]
+
+    fig.add_trace(
+        go.Scatter(
+            x=xs,
+            y=ys,
+            mode="lines+markers",
+            name=y_label,
+            line=dict(color="#555577", width=1.0),
+            marker=dict(color=colors, size=7, symbol="circle", line=dict(width=0)),
+            hovertext=hovers,
+            hovertemplate="%{hovertext}<extra></extra>",
+        ),
+        row=4,
+        col=1,
+    )
+    if len(xs) >= 2:
+        fig.add_trace(
+            go.Scatter(
+                x=[xs[0], xs[-1]],
+                y=[0, 0],
+                mode="lines",
+                line=dict(color="#555577", width=1, dash="dot"),
+                showlegend=False,
+                hoverinfo="skip",
+            ),
+            row=4,
+            col=1,
+        )
 
 
 def _add_funding_panel(fig: go.Figure, funding_df: pl.DataFrame) -> None:
@@ -722,7 +803,25 @@ def _add_marker_trace(
         f"Size: {sz:,.2f}<br>"
         f"VWAP: ${(vw if vw is not None else 0):,.4f}<br>"
         f"Closed PnL: ${(pn if pn is not None else 0):,.2f}"
-        for n, sz, vw, pn in zip(counts, sizes, vwaps, pnls)
+        + (
+            f"<br>{orderbook_pulls._format_spread_line(row)}"
+            f"<br>Kauf-Vol Top5: {row.get('ob_bid5_mean'):,.0f}"
+            f" | Verkauf-Vol Top5: {row.get('ob_ask5_mean'):,.0f}"
+            if row.get("ob_spread_mean") is not None
+            else ""
+        )
+        + (
+            f"<br>{format_levels_hover_html(row.get('ob_bid_levels_json'), row.get('ob_ask_levels_json'))}"
+            if row.get("ob_bid_levels_json") or row.get("ob_ask_levels_json")
+            else ""
+        )
+        for n, sz, vw, pn, row in zip(
+            counts,
+            sizes,
+            vwaps,
+            pnls,
+            flt.iter_rows(named=True),
+        )
     ]
 
     fig.add_trace(

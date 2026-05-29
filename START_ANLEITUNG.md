@@ -121,6 +121,43 @@ Hier kannst du jetzt oben das Wallet eingeben, **Wallet Force Pull** oder **Wall
 
 ---
 
+### 📖 S3 Order Book (historisches Markt-Orderbuch)
+
+Zeigt **Spread und Liquiditaet am Trade-Zeitpunkt** — nur wenn du es manuell startest.
+
+**Einmalig vorbereiten:**
+```bash
+pip install boto3 lz4
+aws configure
+```
+(AWS-Account noetig fuer S3-Download; Hyperliquid-Bucket ist oeffentlich, du zahlst nur Datentransfer.)
+
+**Im Dashboard:**
+1. Wallet laden und **Coin waehlen** (z. B. BTC).
+2. Auf **Order Book Pull** klicken.
+3. Oben siehst du **S3 diesen Monat: X GB / 100 GB** — Hard-Limit, kein Ueberschreiten.
+4. Es werden nur **Stunden-Dateien** geladen, in denen diese Wallet den Coin getradet hat (1 Snapshot pro Fill).
+5. Im Chart (Panel 4 **Z-Spread @ Trade**):
+   - **Gruen** (Z ≤ −0,5σ): bessere Liquiditaet als ueblich fuer Coin + UTC-Stunde
+   - **Grau**: normal
+   - **Rot** (Z ≥ +1,5σ): breiter Spread / duenne Liquiditaet
+   - Hover: Spread in USD + bps + Z-Score, Kauf-/Verkauf-Volumen Top5
+
+**Baseline (0 GB extra):** Z-Spread nutzt `s3_cache/_baseline/liquidity_baseline.parquet` — gebaut aus bereits gepullten Stunden, kein zusaetzlicher S3-Download. Manuell: `python analytics/scripts/build_liquidity_baseline.py`
+
+**Alternativ im Terminal:**
+```bash
+python analytics/scripts/force_pull_orderbook.py 0xDEINE_WALLET BTC
+```
+
+| **Hinweis:** Offizielle S3-L2-Daten (`hyperliquid-archive`) enden ca. April 2025. Aeltere Trades funktionieren, neuere nicht.
+
+**Nur Perpetuals:** Spot-Coins (`@142` usw.) und HIP-3 (`xyz:MU`) haben **kein** Order Book im S3-Archiv. Waehle z.B. BTC, ZEC, ZRO.
+
+**Archiv-Luecken:** Nicht jede Stunde ist auf S3 vorhanden (z.B. Oktober 2025 oft noch nicht). Der Pull laedt verfuegbare Stunden und ueberspringt fehlende — Trades in fehlenden Stunden bekommen keinen Order-Book-Hover.
+
+---
+
 ### 🐦 Twitter-News auf den Chart legen (Force Pull Twitter)
 
 Du kannst die Tweets eines bestimmten X/Twitter-Accounts in einem von dir gewählten Zeitraum direkt als klickbare Sprechblasen am unteren Rand des Charts anzeigen lassen.

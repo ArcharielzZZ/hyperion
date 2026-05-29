@@ -119,12 +119,13 @@ Linien-Opacity ca. 40 %. Klassifikation: `reduce_only` + Side A/B, sonst Side B 
 | Markt-Funding-Rate (unteres Panel) | `market/<COIN>_funding.parquet` oder Live |
 | Wallet-Funding-Summe | Titelzeile: Summe `user_funding` im **sichtbaren Kerzen-Zeitraum** (negativ = gezahlt) |
 | Twitter-Sprechblasen | unten am Chart (separater Pull) |
+| Z-Spread @ Trade | Panel 4: Z-Score vs (coin, UTC-Stunde)-Baseline; Gruen/Grau/Rot; Hover USD+bps+Vol Top5 |
 
 ## Datenquellen
 
 - **Wallet-Daten:** Bundle oder Legacy-Parquet unter `analytics/data_lake/wallets/`.
+- **S3 Order Book:** `hyperliquid-archive` via `force_pull_orderbook.py` — nur Stunden mit Fills, 100 GB/Monat Cap.
 - **Sichtbarer Bereich:** erste bis letzte Wallet-Aktivitaet auf dem Coin + 7 Tage Padding.
-- **Kein** historisches Orderbuch (API-Limit).
 
 ## Frische Daten
 

@@ -32,3 +32,11 @@ def market_candles_path(market_dir: Path, coin: str, interval: str) -> Path:
 
 def market_funding_path(market_dir: Path, coin: str) -> Path:
     return market_dir / market_funding_filename(coin)
+
+
+def market_orderbook_snapshots_filename(coin: str) -> str:
+    return f"{sanitize_coin_for_filename(coin)}_orderbook_snapshots.parquet"
+
+
+def market_orderbook_snapshots_path(market_dir: Path, coin: str) -> Path:
+    return market_dir / market_orderbook_snapshots_filename(coin)
